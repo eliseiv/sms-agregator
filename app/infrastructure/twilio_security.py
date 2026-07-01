@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from twilio.request_validator import RequestValidator  # type: ignore[import-not-found]
+from twilio.request_validator import RequestValidator  # type: ignore[import-not-found, import-untyped]
 
 
 def validate_twilio_signature(
