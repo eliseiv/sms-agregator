@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+
+{# SSR-оболочка страницы команд (docs/05 §7). Backend отдаёт пустой контекст —
+   список подгружается client-side из GET /api/admin/teams (+ GET /api/admin/users
+   для выбора нового лидера) через admin_teams.js. #}
+
+{% block title %}Команды &middot; SMS Агрегатор{% endblock %}
+{% block body_class %}admin-teams{% endblock %}
+
+{% block content %}
+<section class="admin" aria-labelledby="teams-heading">
+  <header class="admin__toolbar">
+    <h1 id="teams-heading" class="admin__title">Команды</h1>
+    <div class="admin__actions">
+      <a class="topnav__link" href="/admin">&larr; К пользователям</a>
+      <button type="button" class="btn btn--primary" data-admin-create-team>+ Создать команду</button>
+    </div>
+  </header>
+
+  <p class="admin__hint">
+    Команду можно удалить только когда она пуста: сначала переведите/удалите
+    участников (раздел «Пользователи»), затем удалите команду.
+  </p>
+
+  {# Корневой контейнер: admin_teams.js рендерит loading / error / empty / success. #}
+  <div data-teams-root aria-live="polite">
+    <div class="admin__loading" role="status">Загрузка списка команд…</div>
+  </div>
+
+  {# --- Диалог создания команды (POST /api/admin/teams {name}) --- #}
+  <dialog class="dialog" id="dialog-create-team" data-admin-create-team-dialog>
+    <form method="dialog" class="dialog__form-cancel">
+      <button type="submit" class="btn btn--link" aria-label="Закрыть">&times;</button>
+    </form>
+    <h2 class="dialog__title">Создать команду</h2>
+    <p class="form-error" role="alert" data-admin-create-team-error hidden></p>
+    <form class="form" data-admin-create-team-form>
+      <div class="field">
+        <label class="field__label" for="new-team-name">Название команды</label>
+        <input
+          class="field__input"
+          type="text"
+          id="new-team-name"
+          name="name"
+          required
+          minlength="1"
+          maxlength="100"
+          autocomplete="off">
+        <p class="field__hint">От 1 до 100 символов.</p>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary" data-admin-create-team-submit>Создать</button>
+      </div>
+    </form>
+  </dialog>
+
+  {# --- Диалог переименования (PATCH /api/admin/teams/{id} {name}) --- #}
+  <dialog class="dialog" id="dialog-rename-team" data-admin-rename-dialog>
+    <form method="dialog" class="dialog__form-cancel">
+      <button type="submit" class="btn btn--link" aria-label="Закрыть">&times;</button>
+    </form>
+    <h2 class="dialog__title">Переименовать команду</h2>
+    <p class="form-error" role="alert" data-admin-rename-error hidden></p>
+    <form class="form" data-admin-rename-form>
+      <div class="field">
+        <label class="field__label" for="rename-team-name">Новое название</label>
+        <input
+          class="field__input"
+          type="text"
+          id="rename-team-name"
+          name="name"
+          required
+          minlength="1"
+          maxlength="100"
+          autocomplete="off">
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn--secondary" data-admin-rename-cancel>Отмена</button>
+        <button type="submit" class="btn btn--primary" data-admin-rename-go>Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  {# --- Диалог переназначения лидера (PATCH /api/admin/teams/{id}/leader) ---
+     new_leader_user_id обязан быть участником этой команды. #}
+  <dialog class="dialog" id="dialog-leader-team" data-admin-leader-dialog>
+    <form method="dialog" class="dialog__form-cancel">
+      <button type="submit" class="btn btn--link" aria-label="Закрыть">&times;</button>
+    </form>
+    <h2 class="dialog__title">Назначить лидера</h2>
+    <p>Команда <strong data-admin-leader-teamname></strong></p>
+    <p class="form-error" role="alert" data-admin-leader-error hidden></p>
+    <p class="field__hint" data-admin-leader-empty hidden>
+      В команде нет участников для назначения лидером.
+    </p>
+    <form class="form" data-admin-leader-form>
+      <div class="field" data-admin-leader-field>
+        <label class="field__label" for="leader-user-select">Новый лидер</label>
+        <select class="field__input" id="leader-user-select" name="new_leader_user_id" required data-admin-leader-select></select>
+        <p class="field__hint">Доступны только участники этой команды.</p>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn--secondary" data-admin-leader-cancel>Отмена</button>
+        <button type="submit" class="btn btn--primary" data-admin-leader-go>Назначить</button>
+      </div>
+    </form>
+  </dialog>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/admin_teams.js?v={{ static_v }}"></script>
+{% endblock %}

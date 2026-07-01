@@ -1,0 +1,96 @@
+# Порядок первичного запуска (первый переход на PostgreSQL):
+#   1. Скопировать .env.example -> .env, заполнить секреты (POSTGRES_*, ADMIN_*, TWILIO_*, TELEGRAM_*).
+#   2. docker compose up -d postgres redis        # поднять зависимости (дождутся healthy)
+#   3. docker compose up migrate                  # alembic upgrade head, one-off, завершится сам
+#   4. (опц.) одноразовая миграция данных из SQLite:
+#        docker compose run --rm app python -m scripts.migrate_sqlite_to_pg \
+#          --sqlite /path/to/service.db --database-url "$DATABASE_URL" --orphan-team-name Legacy
+#   5. docker compose up -d app                   # приложение
+# Обычный запуск после настройки: docker compose up -d  (миграции применит сервис migrate)
+# Ручной откат миграции: docker compose run --rm migrate alembic downgrade -1
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sms-aggregator-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # $$ — экранирование для подстановки внутри контейнера, а не compose
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - default
+
+  redis:
+    image: redis:7-alpine
+    container_name: sms-aggregator-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - default
+
+  migrate:
+    build: .
+    image: sms-aggregator-app:latest
+    container_name: sms-aggregator-migrate
+    command: ["alembic", "upgrade", "head"]
+    env_file:
+      - .env
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - default
+
+  app:
+    build: .
+    image: sms-aggregator-app:latest
+    container_name: sms-aggregator-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8137:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - default
+      - global_network
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  default:
+  global_network:
+    external: true

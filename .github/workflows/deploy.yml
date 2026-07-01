@@ -1,0 +1,83 @@
+name: Deploy
+
+# CD: деплой на прод-сервер по SSH при push в main.
+#
+# GitHub Secrets — РОВНО ТРИ (больше не заводить):
+#   SSH_HOST         — IP/host прод-сервера (напр. 49.12.189.77)
+#   SSH_USER         — SSH-пользователь (напр. root)
+#   SSH_PRIVATE_KEY  — приватный ключ деплой-пары (публичная часть — в
+#                      ~SSH_USER/.ssh/authorized_keys на сервере; см. deploy/README.md)
+#
+# Доставка кода: рабочее дерево пакуется НА РАННЕРЕ (после actions/checkout) и
+# передаётся АРХИВОМ поверх SSH тем же ключом (tar czf - ... | ssh 'tar xzf -').
+# Серверу git-доступ к GitHub НЕ нужен — три секрета самодостаточны, четвёртой
+# учётки (git-credential на сервере) нет.
+#
+# Путь деплоя и домен НЕ в секретах — захардкожены здесь и в артефактах
+# (/opt/sms-agreagtor, novirell.shop). Образ собирается НА СЕРВЕРЕ (без registry).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+env:
+  DEPLOY_PATH: /opt/sms-agreagtor
+
+jobs:
+  deploy:
+    name: SSH deploy (archive push + build on server)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Prepare remote dir (preserve server .env / secrets)
+        run: |
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes \
+            "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
+            "set -eu; \
+             mkdir -p '${DEPLOY_PATH}'; \
+             find '${DEPLOY_PATH}' -mindepth 1 -maxdepth 1 \
+               ! -name .env ! -name secrets -exec rm -rf {} +"
+
+      - name: Push working tree (tar over SSH)
+        # Чистая доставка: удалили всё кроме .env/secrets (шаг выше), затем
+        # распаковали свежее дерево — эквивалент rsync --delete без зависимости
+        # от rsync на сервере. .env/secrets/данные/кэши в архив не входят.
+        run: |
+          tar czf - \
+            --exclude=.git \
+            --exclude=.env \
+            --exclude=secrets \
+            --exclude=data \
+            --exclude=__pycache__ \
+            --exclude=.mypy_cache \
+            --exclude=.ruff_cache \
+            --exclude=.pytest_cache \
+            --exclude=.venv \
+            --exclude=.idea \
+            --exclude=.coverage \
+            . | ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes \
+              "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
+              "tar xzf - -C '${DEPLOY_PATH}'"
+
+      - name: Run deploy script on server
+        run: |
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes \
+            "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
+            "set -eu; cd '${DEPLOY_PATH}'; exec bash deploy/deploy.sh"
+
+      - name: Cleanup key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

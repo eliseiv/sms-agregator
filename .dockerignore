@@ -1,0 +1,39 @@
+# VCS
+.git/
+.gitignore
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Virtualenv
+.venv/
+venv/
+
+# Secrets / env — не попадают в образ
+.env
+secrets/
+
+# Local data / SQLite (legacy)
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Backups
+*.bak
+*.bak_*
+
+# Не нужны в образе
+docs/
+tests/
+README.md
+docker-compose.yml
+Dockerfile
+.dockerignore

@@ -1,0 +1,101 @@
+name: CI
+
+# Lint + type-check + tests. Секреты НЕ требуются.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-typecheck:
+    name: ruff + mypy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # dev-инструменты качества (не в requirements.txt — см. docs/02 Q-TECH-1)
+          pip install ruff==0.8.6 mypy==1.14.1
+
+      - name: ruff format (check)
+        run: ruff format --check .
+
+      - name: ruff check (lint)
+        run: ruff check .
+
+      - name: mypy
+        run: mypy shared app scripts
+
+  tests:
+    name: pytest (integration с PostgreSQL + Redis)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sms
+          POSTGRES_PASSWORD: sms
+          POSTGRES_DB: sms
+        # conftest.py жёстко ожидает PostgreSQL на localhost:55620
+        ports:
+          - 55620:5432
+        options: >-
+          --health-cmd "pg_isready -U sms -d sms"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        # conftest.py жёстко ожидает Redis на localhost:63811
+        ports:
+          - 63811:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # тест-инструменты (см. docs/02, docs/06)
+          pip install pytest==8.3.4 pytest-asyncio==0.25.2 asgi-lifespan==2.1.0
+
+      - name: Create auxiliary test databases
+        # test_migrations.py -> smsmig, test_data_migration.py -> smsdata.
+        # Схему в этих БД строит сама тест-сессия через alembic upgrade head.
+        env:
+          PGPASSWORD: sms
+        run: |
+          for db in smsmig smsdata; do
+            psql -h localhost -p 55620 -U sms -d sms -v ON_ERROR_STOP=1 \
+              -c "CREATE DATABASE ${db};"
+          done
+
+      - name: Run tests
+        run: pytest -q

@@ -1,0 +1,126 @@
+# =============================================================================
+# Production compose для sms-agreagtor (STANDALONE — используется в одиночку,
+# НЕ мёржится с docker-compose.yml).
+#
+#   docker compose -f docker-compose.prod.yml <cmd>
+#
+# Почему standalone, а не override к базовому compose:
+#   docker compose МЁРЖИТ списки `ports` и `networks` (append/union), а не
+#   заменяет их. Override поверх базового давал дубль публикации :8137 и
+#   притягивал несуществующую на сервере сеть `global_network`. Standalone-файл
+#   даёт полный контроль над топологией. (Базовый docker-compose.yml остаётся
+#   для локальной разработки; расхождение по имени сети — open_issue для
+#   architect, docs/07.)
+#
+# Топология (НЕинвазивная к mail-agregator, postapp.store не трогаем):
+#   - postgres / redis : только внутренняя сеть `default`, наружу НЕ выставлены;
+#   - migrate          : one-off alembic upgrade head (до старта app);
+#   - app              : сети `default` (БД/Redis) + внешняя `mas-net` (edge).
+#                        mas-nginx проксирует novirell.shop -> sms-aggregator-app:8000
+#                        по docker-DNS в mas-net. Публикуется ТОЛЬКО 127.0.0.1:8137
+#                        (локальный healthcheck/отладка) — публично app закрыт.
+#   - TLS/edge         : mas-nginx (host certbot, /etc/letsencrypt). Своего nginx
+#                        и биндинга 80/443 у sms НЕТ.
+# =============================================================================
+
+name: sms-agreagtor
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sms-aggregator-postgres
+    restart: unless-stopped
+    <<: *logging
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - default
+
+  redis:
+    image: redis:7-alpine
+    container_name: sms-aggregator-redis
+    restart: unless-stopped
+    <<: *logging
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - default
+
+  migrate:
+    build: .
+    image: sms-aggregator-app:latest
+    container_name: sms-aggregator-migrate
+    command: ["alembic", "upgrade", "head"]
+    env_file:
+      - .env
+    restart: "no"
+    <<: *logging
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - default
+
+  app:
+    build: .
+    image: sms-aggregator-app:latest
+    container_name: sms-aggregator-app
+    restart: unless-stopped
+    <<: *logging
+    env_file:
+      - .env
+    # Публикуем ТОЛЬКО на loopback хоста (health/отладка). Публичный трафик —
+    # через mas-nginx по сети mas-net. Наружу порт не открыт.
+    ports:
+      - "127.0.0.1:8137:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - default
+      - mas-net
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  default:
+  # Внешняя edge-сеть mail-agregator (docker network ls: mas-net). Существует
+  # заранее (создаётся стеком mail-agregator). Деплой sms её НЕ создаёт/НЕ удаляет.
+  mas-net:
+    external: true

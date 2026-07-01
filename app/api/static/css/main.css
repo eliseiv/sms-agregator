@@ -1,0 +1,581 @@
+/* =============================================================================
+   SMS Агрегатор — main.css
+   Единая таблица стилей, отдаётся с /static/css/main.css.
+   Никаких inline-стилей: CSP запрещает их (docs/08-security §7).
+   Mobile-first; системный шрифт; светлая + тёмная (prefers-color-scheme) темы;
+   тема Telegram Mini App через body.tg-app + --tg-* переменные (tg.js).
+   ========================================================================== */
+
+/* ---------- 1. Токены ---------------------------------------------------- */
+:root {
+  --color-bg:            #ffffff;
+  --color-bg-subtle:     #fafafa;
+  --color-bg-hover:      #f4f4f5;
+  --color-text:          #0a0a0a;
+  --color-text-muted:    #52525b;
+  --color-text-faint:    #a1a1aa;
+  --color-border:        #e4e4e7;
+  --color-border-strong: #d4d4d8;
+
+  --color-primary:       #4f46e5;
+  --color-primary-hover: #4338ca;
+  --color-primary-soft:  #eef2ff;
+  --color-primary-fg:    #ffffff;
+  --color-primary-ring:  rgba(79, 70, 229, 0.18);
+
+  --color-danger:        #dc2626;
+  --color-danger-hover:  #b91c1c;
+  --color-success:       #15803d;
+  --color-success-soft:  #ecfdf5;
+  --color-warning:       #b45309;
+
+  --color-error-bg:      #fef2f2;
+  --color-success-bg:    #ecfdf5;
+  --color-warning-bg:    #fef3c7;
+  --color-info-bg:       #eef2ff;
+
+  --color-focus-ring:    #818cf8;
+  --color-overlay:       rgba(9, 9, 11, 0.55);
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+
+  --font-family-system: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                        "Inter", Oxygen, Ubuntu, Cantarell, "Helvetica Neue",
+                        Arial, sans-serif;
+  --font-family-mono:   ui-monospace, SFMono-Regular, Menlo, Consolas,
+                        "Liberation Mono", monospace;
+  --font-size-xs:   0.75rem;
+  --font-size-sm:   0.875rem;
+  --font-size-base: 0.9375rem;
+  --font-size-md:   1.0625rem;
+  --font-size-lg:   1.25rem;
+  --font-size-xl:   1.5rem;
+  --font-size-xxl:  2rem;
+  --line-height-base: 1.55;
+
+  --content-max:   1040px;
+  --topbar-height: 60px;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-full: 9999px;
+
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.02);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.06), 0 2px 4px rgba(15, 23, 42, 0.04);
+  --shadow-lg: 0 12px 28px rgba(15, 23, 42, 0.10), 0 4px 8px rgba(15, 23, 42, 0.04);
+  --shadow-ring-focus: 0 0 0 3px var(--color-primary-ring);
+
+  --transition: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ---------- 1a. Тёмная тема ---------------------------------------------- */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg:            #09090b;
+    --color-bg-subtle:     #18181b;
+    --color-bg-hover:      #27272a;
+    --color-text:          #fafafa;
+    --color-text-muted:    #a1a1aa;
+    --color-text-faint:    #71717a;
+    --color-border:        rgba(255, 255, 255, 0.10);
+    --color-border-strong: rgba(255, 255, 255, 0.18);
+
+    --color-primary:       #818cf8;
+    --color-primary-hover: #a5b4fc;
+    --color-primary-soft:  rgba(129, 140, 248, 0.12);
+    --color-primary-fg:    #0b0a18;
+    --color-primary-ring:  rgba(129, 140, 248, 0.28);
+
+    --color-danger:        #f87171;
+    --color-danger-hover:  #fca5a5;
+    --color-success:       #4ade80;
+    --color-success-soft:  rgba(74, 222, 128, 0.10);
+    --color-warning:       #fbbf24;
+
+    --color-error-bg:      rgba(248, 113, 113, 0.10);
+    --color-success-bg:    rgba(74, 222, 128, 0.10);
+    --color-warning-bg:    rgba(251, 191, 36, 0.12);
+    --color-info-bg:       rgba(129, 140, 248, 0.10);
+
+    --color-focus-ring:    #a5b4fc;
+    --color-overlay:       rgba(0, 0, 0, 0.70);
+
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45), 0 2px 4px rgba(0, 0, 0, 0.30);
+    --shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.55), 0 4px 8px rgba(0, 0, 0, 0.35);
+  }
+}
+
+/* ---------- 2. Reset / base ---------------------------------------------- */
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-family-system);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-base);
+  color: var(--color-text);
+  background: var(--color-bg-subtle);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+img, svg { max-width: 100%; height: auto; }
+
+h1, h2, h3, h4 { font-weight: 600; letter-spacing: -0.02em; line-height: 1.25; }
+
+a {
+  color: var(--color-primary);
+  text-decoration: none;
+  text-underline-offset: 2px;
+  transition: color var(--transition);
+}
+a:hover { color: var(--color-primary-hover); text-decoration: underline; }
+
+:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: var(--color-text);
+  color: var(--color-bg);
+  padding: var(--space-2) var(--space-3);
+  z-index: 1000;
+  border-radius: var(--radius-sm);
+}
+.skip-link:focus { top: var(--space-2); left: var(--space-2); }
+
+.visually-hidden {
+  position: absolute !important;
+  clip: rect(1px, 1px, 1px, 1px);
+  clip-path: inset(50%);
+  width: 1px; height: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* ---------- 3. Layout ---------------------------------------------------- */
+.topbar {
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+.topbar__inner {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: var(--space-3) var(--space-5);
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-height: var(--topbar-height);
+  flex-wrap: wrap;
+}
+.brand {
+  font-weight: 600;
+  font-size: var(--font-size-md);
+  color: var(--color-text);
+}
+.brand:hover { color: var(--color-text); text-decoration: none; }
+
+.topnav {
+  display: flex;
+  gap: var(--space-1);
+  margin-left: var(--space-4);
+  flex: 1;
+  flex-wrap: wrap;
+}
+.topnav__link {
+  color: var(--color-text-muted);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  font-weight: 500;
+  font-size: var(--font-size-sm);
+  transition: background-color var(--transition), color var(--transition);
+}
+.topnav__link:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text);
+  text-decoration: none;
+}
+.topnav__link--active { background: var(--color-primary-soft); color: var(--color-primary); }
+
+.topbar__user {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-left: auto;
+}
+.topbar__username { color: var(--color-text-muted); font-size: var(--font-size-sm); font-weight: 500; }
+
+.main {
+  flex: 1 0 auto;
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5);
+}
+
+.footer {
+  border-top: 1px solid var(--color-border);
+  padding: var(--space-5);
+  text-align: center;
+  color: var(--color-text-faint);
+  font-size: var(--font-size-xs);
+}
+
+/* ---------- 4. Buttons --------------------------------------------------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  line-height: 1;
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+  cursor: pointer;
+  white-space: nowrap;
+  min-height: 40px;
+  transition: background-color var(--transition), color var(--transition),
+              border-color var(--transition), box-shadow var(--transition),
+              transform var(--transition);
+}
+.btn:active:not(:disabled):not([aria-disabled="true"]) { transform: scale(0.98); }
+.btn:disabled, .btn[aria-disabled="true"] { cursor: not-allowed; opacity: 0.5; }
+
+.btn--primary {
+  background: var(--color-primary);
+  color: var(--color-primary-fg);
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-xs);
+}
+.btn--primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn--secondary {
+  background: var(--color-bg);
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
+}
+.btn--secondary:hover:not(:disabled) { background: var(--color-bg-hover); }
+
+.btn--danger {
+  background: var(--color-bg);
+  color: var(--color-danger);
+  border-color: var(--color-border-strong);
+}
+.btn--danger:hover:not(:disabled) {
+  background: var(--color-danger);
+  color: #ffffff;
+  border-color: var(--color-danger);
+}
+
+.btn--link {
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-primary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  padding: var(--space-1) var(--space-2);
+  min-height: auto;
+}
+.btn--link:hover:not(:disabled) { background: transparent; color: var(--color-primary-hover); }
+
+.btn--small {
+  font-size: var(--font-size-xs);
+  padding: var(--space-1) var(--space-3);
+  min-height: 30px;
+  border-radius: var(--radius-sm);
+}
+
+/* ---------- 5. Forms ----------------------------------------------------- */
+.form { display: flex; flex-direction: column; gap: var(--space-4); }
+.inline-form { display: inline-flex; align-items: center; gap: var(--space-2); margin: 0; }
+
+.field { display: flex; flex-direction: column; gap: var(--space-2); }
+.field__label { font-size: var(--font-size-sm); font-weight: 500; color: var(--color-text); }
+.field__optional { color: var(--color-text-muted); font-weight: 400; font-size: var(--font-size-xs); }
+.field__hint { font-size: var(--font-size-xs); color: var(--color-text-muted); margin: 0; }
+.field__input {
+  font-family: inherit;
+  font-size: var(--font-size-base);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-text-muted);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+  width: 100%;
+  min-height: 40px;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.field__input::placeholder { color: var(--color-text-faint); }
+.field__input:focus, .field__input:focus-visible {
+  border-color: var(--color-primary);
+  outline: none;
+  box-shadow: var(--shadow-ring-focus);
+}
+.field__input[readonly] { background: var(--color-bg-subtle); color: var(--color-text-muted); }
+
+.form-actions { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+
+.form-error {
+  background: var(--color-error-bg);
+  color: var(--color-danger);
+  border: 1px solid var(--color-danger);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  margin: 0 0 var(--space-3);
+}
+
+/* ---------- 6. Flash ----------------------------------------------------- */
+.flashes {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.flash {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  font-size: var(--font-size-sm);
+}
+.flash--info    { background: var(--color-info-bg);    border-color: var(--color-primary); color: var(--color-primary); }
+.flash--success { background: var(--color-success-bg); border-color: var(--color-success); color: var(--color-success); }
+.flash--warning { background: var(--color-warning-bg); border-color: var(--color-warning); color: var(--color-warning); }
+.flash--error   { background: var(--color-error-bg);   border-color: var(--color-danger);  color: var(--color-danger); }
+
+/* ---------- 7. Auth-card ------------------------------------------------- */
+.page--login .main,
+.page--set-password .main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - var(--topbar-height) - 80px);
+}
+.auth-card {
+  width: 100%;
+  max-width: 26rem;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  box-shadow: var(--shadow-md);
+}
+.auth-card__title { margin: 0 0 var(--space-4); font-size: var(--font-size-xl); }
+.auth-card__intro { color: var(--color-text-muted); margin: 0 0 var(--space-5); }
+.auth-card__hint  { color: var(--color-text-muted); margin: var(--space-5) 0 0; font-size: var(--font-size-sm); }
+
+/* ---------- 8. Admin ----------------------------------------------------- */
+.admin__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+  flex-wrap: wrap;
+}
+.admin__title { margin: 0; font-size: var(--font-size-xl); }
+.admin__actions { display: flex; gap: var(--space-3); align-items: center; flex-wrap: wrap; }
+.admin__hint { margin: 0 0 var(--space-4); color: var(--color-text-muted); font-size: var(--font-size-sm); }
+.admin__loading {
+  padding: var(--space-6);
+  text-align: center;
+  color: var(--color-text-muted);
+}
+.admin__empty {
+  padding: var(--space-6);
+  text-align: center;
+  color: var(--color-text-muted);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.table-wrapper { overflow-x: auto; }
+
+.admin-users-table,
+.admin-groups-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.admin-users-table th, .admin-users-table td,
+.admin-groups-table th, .admin-groups-table td {
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+  font-size: var(--font-size-sm);
+}
+.admin-users-table thead th,
+.admin-groups-table thead th {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: var(--font-size-xs);
+}
+.admin-users-table tbody tr:last-child td,
+.admin-groups-table tbody tr:last-child td { border-bottom: none; }
+.admin-users-table tbody tr:hover,
+.admin-groups-table tbody tr:hover { background: var(--color-bg-subtle); }
+.admin-users-table__row--system { color: var(--color-text-muted); }
+.admin-users-table__name, .admin-groups-table__name { font-weight: 600; }
+.admin-users-table__muted { color: var(--color-text-muted); font-size: var(--font-size-xs); }
+.admin-users-table__date { color: var(--color-text-muted); font-variant-numeric: tabular-nums; }
+.admin-users-table__actions, .admin-groups-table__actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* Role / status badges */
+.admin-user__badge {
+  display: inline-block;
+  padding: 0.15em 0.7em;
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: nowrap;
+  border: 1px solid var(--color-primary);
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+}
+.admin-user__badge--super_admin {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+.admin-user__badge--group_leader {
+  background: var(--color-success-soft);
+  color: var(--color-success);
+  border-color: var(--color-success);
+}
+.admin-user__badge--group_member {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-muted);
+  border-color: var(--color-border-strong);
+}
+
+/* Team chips */
+.team-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-subtle);
+  font-size: 0.85rem;
+  line-height: 1.4;
+  max-width: 100%;
+}
+.team-chip--home { background: var(--color-primary-soft); border-color: var(--color-primary); color: var(--color-primary); }
+.team-chip__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- 9. Dialog ---------------------------------------------------- */
+.dialog {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  background: var(--color-bg);
+  color: var(--color-text);
+  width: min(28rem, calc(100vw - 2rem));
+  box-shadow: var(--shadow-lg);
+}
+.dialog::backdrop { background: var(--color-overlay); }
+.dialog__title { margin: 0 0 var(--space-3); font-size: var(--font-size-lg); }
+.dialog__form-cancel { position: absolute; top: var(--space-3); right: var(--space-3); margin: 0; }
+
+/* ---------- 10. Error pages ---------------------------------------------- */
+.error-page { text-align: center; padding: var(--space-7) var(--space-4); max-width: 32rem; margin: 0 auto; }
+.error-page__code {
+  font-size: var(--font-size-xxl);
+  font-weight: 700;
+  color: var(--color-text-muted);
+  margin: 0;
+  font-family: var(--font-family-mono);
+}
+.error-page__title { margin: var(--space-3) 0; font-size: var(--font-size-xl); }
+.error-page__message { color: var(--color-text-muted); margin: 0 0 var(--space-5); }
+.error-page__actions { display: flex; justify-content: center; gap: var(--space-3); }
+.error-page__rid { margin-top: var(--space-5); color: var(--color-text-faint); font-size: var(--font-size-xs); }
+.error-page__rid code { font-family: var(--font-family-mono); }
+
+/* ---------- 11. Telegram Mini App (body.tg-app) -------------------------- */
+/* --tg-* переменные заполняет tg.js из Telegram themeParams; каждая имеет
+   fallback на светлый токен, чтобы вёрстка оставалась осмысленной. */
+body.tg-app {
+  --color-bg:         var(--tg-bg, #ffffff);
+  --color-bg-subtle:  var(--tg-secondary-bg, #fafafa);
+  --color-bg-hover:   var(--tg-secondary-bg, #f4f4f5);
+  --color-text:       var(--tg-text, #0a0a0a);
+  --color-text-muted: var(--tg-hint, #52525b);
+  --color-primary:    var(--tg-button, #4f46e5);
+  --color-primary-fg: var(--tg-button-text, #ffffff);
+}
+/* В Telegram WebView свой back/close — прячем верхнюю навигацию и футер. */
+body.tg-app .topnav { display: none; }
+body.tg-app .topbar__inner { padding: var(--space-2) var(--space-4); min-height: auto; }
+body.tg-app .main { padding: var(--space-3) var(--space-4); }
+body.tg-app .footer { display: none; }
+
+/* ---------- 12. Mobile --------------------------------------------------- */
+@media (max-width: 640px) {
+  .topbar__inner { padding: var(--space-2) var(--space-4); gap: var(--space-2); }
+  .topnav { margin-left: 0; order: 3; flex-basis: 100%; }
+  .main { padding: var(--space-4) var(--space-3); }
+  .admin__toolbar { flex-direction: column; align-items: stretch; }
+}
+
+/* ---------- 13. Reduced motion ------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.001ms !important;
+    animation-duration: 0.001ms !important;
+  }
+  .btn:active:not(:disabled) { transform: none; }
+}

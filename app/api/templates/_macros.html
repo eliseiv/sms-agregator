@@ -1,0 +1,47 @@
+{# ---------------------------------------------------------------------------
+   Переиспользуемые Jinja2-макросы SMS-агрегатора.
+
+   Импорт:  {% import "_macros.html" as m with context %}
+   ``with context`` ОБЯЗАТЕЛЕН — иначе переменные вызывающего шаблона
+   (например ``csrf_token``) не видны внутри макросов, и скрытое CSRF-поле
+   рендерится пустым.
+
+   Контракт backend:
+     - ``csrf_token`` (str) присутствует в контексте страниц, которые рендерят
+       форму с изменяющим состояние запросом и уже имеют парную сессию
+       (``/set-password``). На SSR-страницах админки backend его не передаёт —
+       поле остаётся пустым и заполняется из cookie ``sms_csrf`` скриптом
+       csrf.js (double-submit). На шагах логина CSRF не нужен (exempt).
+     - ``flashes`` — итерируемое из объектов/словарей с ключами ``category``
+       ('info'|'success'|'warning'|'error') и ``text``. Может быть пустым.
+   --------------------------------------------------------------------------- #}
+
+{# Скрытое CSRF-поле. Читает ``csrf_token`` из текущего контекста. Если пусто —
+   csrf.js дозаполнит его из cookie ``sms_csrf`` на DOMContentLoaded. #}
+{%- macro csrf_input() -%}
+<input type="hidden" name="csrf_token" value="{{ csrf_token | default('') | e }}">
+{%- endmacro -%}
+
+{# Полоса flash-сообщений. #}
+{%- macro flash_messages(flashes=None) -%}
+{%- set _items = flashes if flashes is not none else (request.state.flashes if request is defined and request.state is defined and request.state.flashes is defined else []) -%}
+{%- if _items -%}
+<ul class="flashes" role="status" aria-live="polite">
+  {%- for item in _items -%}
+    {%- set cat = (item.category if item.category is defined else item['category']) | default('info') -%}
+    {%- set txt = (item.text if item.text is defined else item['text']) | default('') -%}
+    <li class="flash flash--{{ cat | e }}">{{ txt | e }}</li>
+  {%- endfor -%}
+</ul>
+{%- endif -%}
+{%- endmacro -%}
+
+{# Ярлык роли (docs: значения super_admin/group_leader/group_member;
+   ярлыки — «Админ / Лидер / Участник»). #}
+{%- macro role_label(role) -%}
+{%- if role == 'super_admin' -%}Админ
+{%- elif role == 'group_leader' -%}Лидер
+{%- elif role == 'group_member' -%}Участник
+{%- else -%}{{ role | default('') | e }}
+{%- endif -%}
+{%- endmacro -%}

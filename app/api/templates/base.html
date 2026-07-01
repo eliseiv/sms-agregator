@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="same-origin">
+  {# CSRF-токен также кладётся в <meta> для JS, строящего запросы динамически.
+     Первичный источник для double-submit — cookie ``sms_csrf`` (читается
+     csrf.js). На SSR-страницах админки backend его не передаёт. #}
+  {% if csrf_token is defined and csrf_token %}
+    <meta name="csrf-token" content="{{ csrf_token | e }}">
+  {% endif %}
+  <title>{% block title %}SMS Агрегатор{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/main.css?v={{ static_v }}">
+  <link rel="icon" href="data:,">
+  {# Telegram Mini App: SDK грузится с telegram.org (CSP script-src разрешает
+     этот origin, docs/08-security §7). tg.js — no-op в обычном браузере.
+     Оба скрипта с ``defer`` — порядок гарантирован: SDK, затем glue. #}
+  <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
+  <script src="/static/js/tg.js?v={{ static_v }}" defer></script>
+</head>
+<body class="page page--{% block body_class %}default{% endblock %}">
+  <a class="skip-link" href="#main">Перейти к основному содержимому</a>
+
+  <header class="topbar" role="banner">
+    <div class="topbar__inner">
+      <a href="/" class="brand" aria-label="SMS Агрегатор — на главную">SMS Агрегатор</a>
+
+      {% if request is defined and request.state is defined and request.state.session %}
+        {% import "_macros.html" as m with context %}
+        {% if request.state.session.role == 'super_admin' %}
+          <nav class="topnav" aria-label="Основное меню">
+            <a class="topnav__link{% if request.url.path == '/admin' %} topnav__link--active{% endif %}" href="/admin">Пользователи</a>
+            <a class="topnav__link{% if request.url.path.startswith('/admin/teams') %} topnav__link--active{% endif %}" href="/admin/teams">Команды</a>
+          </nav>
+        {% endif %}
+        <div class="topbar__user">
+          <span class="topbar__username" title="Текущий пользователь">
+            {{ request.state.session.username | default('') | e }}
+          </span>
+          {# Logout — POST-форма с CSRF-токеном (GET для logout запрещён).
+             csrf_token в контексте админки не передаётся — csrf.js дозаполнит
+             скрытое поле из cookie ``sms_csrf`` перед сабмитом. #}
+          <form method="POST" action="/logout" class="inline-form logout-form">
+            {{ m.csrf_input() }}
+            <button type="submit" class="btn btn--link" aria-label="Выйти из аккаунта">Выйти</button>
+          </form>
+        </div>
+      {% endif %}
+    </div>
+  </header>
+
+  <main id="main" class="main" role="main">
+    {% import "_macros.html" as m with context %}
+    {{ m.flash_messages(flashes if flashes is defined else None) }}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer" role="contentinfo">
+    <small>SMS Агрегатор</small>
+  </footer>
+
+  <script src="/static/js/csrf.js?v={{ static_v }}"></script>
+  {% block extra_js %}{% endblock %}
+</body>
+</html>

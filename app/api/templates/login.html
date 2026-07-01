@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+
+{% block title %}Вход &middot; SMS Агрегатор{% endblock %}
+{% block body_class %}login{% endblock %}
+
+{% block content %}
+<section class="auth-card" aria-labelledby="login-heading">
+  <h1 id="login-heading" class="auth-card__title">Вход</h1>
+
+  {% if error_message %}
+    <p class="form-error" role="alert">{{ error_message | e }}</p>
+  {% endif %}
+
+  {# Шаг-1 двухэтапного логина (docs/05 §2). Только логин — пароль на следующем
+     шаге. POST /login CSRF-exempt (сессии/sms_csrf ещё нет). #}
+  <form method="POST" action="/login" class="form" autocomplete="on" novalidate>
+    <div class="field">
+      <label class="field__label" for="login-username">Логин</label>
+      <input
+        class="field__input"
+        type="text"
+        id="login-username"
+        name="username"
+        autocomplete="username"
+        required
+        minlength="1"
+        maxlength="64"
+        autofocus
+        value="{{ form_username | default('') | e }}">
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="btn btn--primary">Далее</button>
+    </div>
+  </form>
+
+  <p class="auth-card__hint">
+    Учётные записи создаёт администратор. Если у вас нет аккаунта — обратитесь к нему.
+  </p>
+</section>
+{% endblock %}

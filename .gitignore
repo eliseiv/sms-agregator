@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.idea/
+.coverage
+.coverage.*
+
+# Virtualenv
+.venv/
+venv/
+
+# Secrets / env (пример коммитим, реальный .env — нет)
+.env
+!.env.example
+secrets/
+
+# Local data / SQLite (legacy)
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Backups
+*.bak
+*.bak_*

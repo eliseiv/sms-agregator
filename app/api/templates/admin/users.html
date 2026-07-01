@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+
+{# SSR-оболочка страницы пользователей (docs/05 §7). Backend отдаёт пустой
+   контекст — список подгружается client-side из GET /api/admin/users и
+   GET /api/admin/teams (admin_users.js). Все изменяющие запросы — через
+   csrfFetch (double-submit X-CSRF-Token из cookie sms_csrf). #}
+
+{% block title %}Пользователи &middot; SMS Агрегатор{% endblock %}
+{% block body_class %}admin-users{% endblock %}
+
+{% block content %}
+<section class="admin" aria-labelledby="admin-heading">
+  <header class="admin__toolbar">
+    <h1 id="admin-heading" class="admin__title">Пользователи</h1>
+    <div class="admin__actions">
+      <a class="topnav__link" href="/admin/teams">Команды &rarr;</a>
+      <button type="button" class="btn btn--primary" data-admin-create-user>+ Создать пользователя</button>
+    </div>
+  </header>
+
+  {# Корневой контейнер: admin_users.js рендерит сюда состояния
+     loading / error / empty / success. #}
+  <div data-users-root aria-live="polite">
+    <div class="admin__loading" role="status">Загрузка списка пользователей…</div>
+  </div>
+
+  {# --- Диалог создания пользователя ---
+     POST /api/admin/users {username, display_name, team_id}. Роль назначается
+     сервером автоматически: первый участник команды становится лидером
+     (правило «первый=лидер», docs/05 §5), остальные — участниками. #}
+  <dialog class="dialog" id="dialog-create-user" data-admin-create-dialog>
+    <form method="dialog" class="dialog__form-cancel">
+      <button type="submit" class="btn btn--link" aria-label="Закрыть">&times;</button>
+    </form>
+    <h2 class="dialog__title">Создать пользователя</h2>
+    <p class="form-error" role="alert" data-admin-create-error hidden></p>
+    <form class="form" data-admin-create-user-form>
+      <div class="field">
+        <label class="field__label" for="new-user-username">Логин</label>
+        <input
+          class="field__input"
+          type="text"
+          id="new-user-username"
+          name="username"
+          required
+          minlength="3"
+          maxlength="64"
+          pattern="[A-Za-z0-9_.\-]+"
+          autocomplete="off">
+        <p class="field__hint">3–64 символа: латиница, цифры, символы <code>_ . -</code>.</p>
+      </div>
+
+      <div class="field">
+        <label class="field__label" for="new-user-display">Отображаемое имя <span class="field__optional">(необязательно)</span></label>
+        <input
+          class="field__input"
+          type="text"
+          id="new-user-display"
+          name="display_name"
+          maxlength="128"
+          autocomplete="off">
+      </div>
+
+      <div class="field">
+        <label class="field__label" for="new-user-team">Команда</label>
+        <select class="field__input" id="new-user-team" name="team_id" required data-admin-team-select>
+          <option value="">— выберите команду —</option>
+        </select>
+        <p class="field__hint" data-admin-team-hint>
+          Команда обязательна. Если команда пуста — новый пользователь становится её лидером.
+        </p>
+        <p class="field__hint" data-admin-team-empty hidden>
+          Команд ещё нет. Сначала <a href="/admin/teams">создайте команду</a>.
+        </p>
+      </div>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary" data-admin-create-submit>Создать</button>
+      </div>
+    </form>
+  </dialog>
+
+  {# --- Диалог перевода в другую команду (PATCH /api/admin/users/{id}) --- #}
+  <dialog class="dialog" id="dialog-move-user" data-admin-move-dialog>
+    <form method="dialog" class="dialog__form-cancel">
+      <button type="submit" class="btn btn--link" aria-label="Закрыть">&times;</button>
+    </form>
+    <h2 class="dialog__title">Перевести в другую команду</h2>
+    <p>Пользователь <strong data-admin-move-username></strong></p>
+    <p class="form-error" role="alert" data-admin-move-error hidden></p>
+    <form class="form" data-admin-move-form>
+      <div class="field">
+        <label class="field__label" for="move-user-team">Команда</label>
+        <select class="field__input" id="move-user-team" name="team_id" required data-admin-move-select></select>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn--secondary" data-admin-move-cancel>Отмена</button>
+        <button type="submit" class="btn btn--primary" data-admin-move-go>Перевести</button>
+      </div>
+    </form>
+  </dialog>
+
+  {# --- Диалог удаления (подтверждение вводом логина) --- #}
+  <dialog class="dialog" id="dialog-delete-user" data-admin-delete-dialog>
+    <form method="dialog" class="dialog__form-cancel">
+      <button type="submit" class="btn btn--link" aria-label="Закрыть">&times;</button>
+    </form>
+    <h2 class="dialog__title">Удалить пользователя</h2>
+    <p>Действие необратимо. Telegram-привязки и доставки пользователя будут удалены.</p>
+    <p>Для подтверждения введите логин <strong data-admin-delete-username></strong> ниже.</p>
+    <p class="form-error" role="alert" data-admin-delete-error hidden></p>
+    <form class="form" data-admin-delete-confirm-form>
+      <div class="field">
+        <label class="field__label" for="delete-confirm-input">Введите логин для подтверждения</label>
+        <input class="field__input" type="text" id="delete-confirm-input" autocomplete="off" required>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn--secondary" data-admin-delete-cancel>Отмена</button>
+        <button type="submit" class="btn btn--danger" data-admin-delete-go disabled>Удалить</button>
+      </div>
+    </form>
+  </dialog>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/admin_users.js?v={{ static_v }}"></script>
+{% endblock %}
