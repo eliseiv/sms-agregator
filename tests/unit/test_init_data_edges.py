@@ -22,7 +22,9 @@ def _sign(fields: dict[str, str]) -> str:
 
 def test_strict_parsing_malformed():
     assert (
-        verify_init_data("justtext", bot_token=TEST_BOT_TOKEN, max_age_seconds=300, now=NOW)
+        verify_init_data(
+            "justtext", bot_token=TEST_BOT_TOKEN, max_age_seconds=300, now=NOW
+        )
         == "malformed"
     )
 

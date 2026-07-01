@@ -28,9 +28,14 @@ async def test_known_number_but_no_recipients():
     fake = FakeTelegram()
     async with make_session() as s:
         await handle_incoming_sms(
-            s, fake, get_settings(),
-            twilio_message_sid="SMnr", from_number="+1",
-            to_number="+441299900001", body="x", raw_payload={},
+            s,
+            fake,
+            get_settings(),
+            twilio_message_sid="SMnr",
+            from_number="+1",
+            to_number="+441299900001",
+            body="x",
+            raw_payload={},
         )
     assert await _count("SELECT count(*) FROM deliveries") == 0
     assert fake.calls == []
@@ -46,9 +51,14 @@ async def test_deliver_not_configured_marks_failed():
     # Telegram не сконфигурирован → mark_failed.
     async with make_session() as s:
         await handle_incoming_sms(
-            s, FakeTelegram(configured=False), get_settings(),
-            twilio_message_sid="SMnc", from_number="+1",
-            to_number="+441299900002", body="x", raw_payload={},
+            s,
+            FakeTelegram(configured=False),
+            get_settings(),
+            twilio_message_sid="SMnc",
+            from_number="+1",
+            to_number="+441299900002",
+            body="x",
+            raw_payload={},
         )
     assert await _count("SELECT count(*) FROM deliveries WHERE status='failed'") == 1
 
@@ -94,15 +104,25 @@ async def test_deliver_twice_is_idempotent_reserve():
     # Первый приём — доставка создана.
     async with make_session() as s:
         await handle_incoming_sms(
-            s, fake, get_settings(),
-            twilio_message_sid="SMid1", from_number="+1",
-            to_number="+441299900003", body="a", raw_payload={},
+            s,
+            fake,
+            get_settings(),
+            twilio_message_sid="SMid1",
+            from_number="+1",
+            to_number="+441299900003",
+            body="a",
+            raw_payload={},
         )
     # Второй SMS с новым SID на тот же номер/чат — новая доставка (другой inbound).
     async with make_session() as s:
         await handle_incoming_sms(
-            s, fake, get_settings(),
-            twilio_message_sid="SMid2", from_number="+1",
-            to_number="+441299900003", body="b", raw_payload={},
+            s,
+            fake,
+            get_settings(),
+            twilio_message_sid="SMid2",
+            from_number="+1",
+            to_number="+441299900003",
+            body="b",
+            raw_payload={},
         )
     assert await _count("SELECT count(*) FROM deliveries WHERE status='sent'") == 2

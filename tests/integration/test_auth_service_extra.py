@@ -24,11 +24,17 @@ async def test_lookup_for_login_ready_and_set_password():
         async with s.begin():
             tid = await seed_team(s, "lk-team")
             await seed_user(
-                s, username="ready", role="group_leader", team_id=tid,
+                s,
+                username="ready",
+                role="group_leader",
+                team_id=tid,
                 password_hash=hash_password("pw12345678"),
             )
             await seed_user(
-                s, username="needspw", role="group_member", team_id=tid,
+                s,
+                username="needspw",
+                role="group_member",
+                team_id=tid,
                 password_reset_required=True,
             )
     async with make_session() as s:
@@ -46,7 +52,9 @@ async def test_complete_set_password_invalid_token_raises():
     async with make_session() as s:
         with pytest.raises(NotAuthenticatedError):
             await AuthService(s).complete_set_password(
-                setup_token="does-not-exist", password="whatever12", ip="1.1.1.1",
+                setup_token="does-not-exist",
+                password="whatever12",
+                ip="1.1.1.1",
                 user_agent="t",
             )
 

@@ -16,7 +16,9 @@ async def _team_member(name):
         async with s.begin():
             tid = await seed_team(s, name)
             await seed_user(s, username=name + "l", role="group_leader", team_id=tid)
-            m = await seed_user(s, username=name + "m", role="group_member", team_id=tid)
+            m = await seed_user(
+                s, username=name + "m", role="group_member", team_id=tid
+            )
         return tid, m.id
 
 
@@ -37,7 +39,9 @@ async def test_list_numbers_superadmin_all_and_by_team(client):
     tid, _ = await _team_member("nx2")
     async with make_session() as s:
         async with s.begin():
-            admin = await seed_user(s, username="nx2root", role="super_admin", team_id=None)
+            admin = await seed_user(
+                s, username="nx2root", role="super_admin", team_id=None
+            )
             await seed_number(s, phone="+441234562222", team_id=tid)
     cookies, headers = await make_auth(admin.id, "super_admin", None)
     r_all = await client.get("/api/numbers", cookies=cookies, headers=headers)
@@ -108,7 +112,9 @@ async def test_invalid_phone_number_400(client):
 async def test_superadmin_team_not_found_404(client):
     async with make_session() as s:
         async with s.begin():
-            admin = await seed_user(s, username="nx7root", role="super_admin", team_id=None)
+            admin = await seed_user(
+                s, username="nx7root", role="super_admin", team_id=None
+            )
     cookies, headers = await make_auth(admin.id, "super_admin", None)
     headers["content-type"] = "application/json"
     r = await client.post(

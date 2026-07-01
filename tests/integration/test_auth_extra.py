@@ -16,7 +16,9 @@ pytestmark = pytest.mark.asyncio(loop_scope="session")
 async def test_logout_with_session_redirects_and_audits(client):
     async with make_session() as s:
         async with s.begin():
-            admin = await seed_user(s, username="lgroot", role="super_admin", team_id=None)
+            admin = await seed_user(
+                s, username="lgroot", role="super_admin", team_id=None
+            )
     cookies, headers = await make_auth(admin.id, "super_admin", None)
     r = await client.post("/logout", cookies=cookies, headers=headers)
     assert r.status_code == 302

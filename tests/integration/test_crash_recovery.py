@@ -27,8 +27,12 @@ async def _seed_two_recipient_team(phone: str, sid: str):
     async with make_session() as s:
         async with s.begin():
             tid = await seed_team(s, "cr-" + sid)
-            u1 = await seed_user(s, username=sid + "-u1", role="group_leader", team_id=tid)
-            u2 = await seed_user(s, username=sid + "-u2", role="group_member", team_id=tid)
+            u1 = await seed_user(
+                s, username=sid + "-u1", role="group_leader", team_id=tid
+            )
+            u2 = await seed_user(
+                s, username=sid + "-u2", role="group_member", team_id=tid
+            )
             await seed_link(s, telegram_user_id=1110, user_id=u1.id)
             await seed_link(s, telegram_user_id=2220, user_id=u2.id)
             await seed_number(s, phone=phone, team_id=tid)
@@ -59,17 +63,43 @@ async def test_9a_webhook_retry_completes_fanout_without_dup():
     # Повтор webhook с тем же MessageSid → дедуп-ветка → общий fan-out.
     async with make_session() as s:
         await handle_incoming_sms(
-            s, fake, get_settings(),
-            twilio_message_sid="SM9a", from_number="+1",
-            to_number="+441277700001", body="hi", raw_payload={"MessageSid": "SM9a"},
+            s,
+            fake,
+            get_settings(),
+            twilio_message_sid="SM9a",
+            from_number="+1",
+            to_number="+441277700001",
+            body="hi",
+            raw_payload={"MessageSid": "SM9a"},
         )
     # inbound_sms не задублирован.
-    assert await _count("SELECT count(*) FROM inbound_sms WHERE twilio_message_sid='SM9a'") == 1
+    assert (
+        await _count("SELECT count(*) FROM inbound_sms WHERE twilio_message_sid='SM9a'")
+        == 1
+    )
     # Обе доставки sent, без дублей.
-    assert await _count("SELECT count(*) FROM deliveries WHERE inbound_sms_id=:s", s=sms_id) == 2
-    assert await _count("SELECT count(*) FROM deliveries WHERE inbound_sms_id=:s AND status='sent'", s=sms_id) == 2
+    assert (
+        await _count(
+            "SELECT count(*) FROM deliveries WHERE inbound_sms_id=:s", s=sms_id
+        )
+        == 2
+    )
+    assert (
+        await _count(
+            "SELECT count(*) FROM deliveries WHERE inbound_sms_id=:s AND status='sent'",
+            s=sms_id,
+        )
+        == 2
+    )
     # U1 не задублирован (одна строка).
-    assert await _count("SELECT count(*) FROM deliveries WHERE inbound_sms_id=:s AND user_id=:u", s=sms_id, u=u1) == 1
+    assert (
+        await _count(
+            "SELECT count(*) FROM deliveries WHERE inbound_sms_id=:s AND user_id=:u",
+            s=sms_id,
+            u=u1,
+        )
+        == 1
+    )
     # Отправлено только U2 (chat 2220); U1 повторно не слали.
     assert fake.calls == [(2220, fake.calls[0][1])]
     assert fake.calls[0][0] == 2220
@@ -113,5 +143,11 @@ async def test_9a_retry_loop_completes_pending():
     async with make_session() as s:
         retried = await retry_pending_deliveries(s, fake, get_settings())
     assert retried == 1
-    assert await _count("SELECT count(*) FROM deliveries WHERE inbound_sms_id=:s AND status='sent'", s=sms_id) == 2
+    assert (
+        await _count(
+            "SELECT count(*) FROM deliveries WHERE inbound_sms_id=:s AND status='sent'",
+            s=sms_id,
+        )
+        == 2
+    )
     assert fake.calls == [(4440, fake.calls[0][1])]
