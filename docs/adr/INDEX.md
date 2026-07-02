@@ -12,6 +12,8 @@
 | [ADR-0006](./ADR-0006-data-migration-sqlite-to-pg.md) | Одноразовая миграция данных SQLite → PostgreSQL | accepted | 2026-07-01 |
 | [ADR-0007](./ADR-0007-deploy-behind-shared-edge-nginx.md) | Деплой за общим edge-nginx соседнего сервиса (additive vhost, host certbot) | accepted | 2026-07-02 |
 | [ADR-0008](./ADR-0008-root-route-and-per-role-landing.md) | Корневой маршрут `/` и per-role landing (`/` диспетчер, `/app` для участников) | accepted | 2026-07-02 |
+| [ADR-0009](./ADR-0009-unassigned-numbers-admin-allocation.md) | Unassigned-номера и админское распределение по командам (амендит ADR-0005 §1) | accepted | 2026-07-02 |
+| [ADR-0010](./ADR-0010-telegram-webhook-and-new-bot.md) | Telegram webhook (`/start`) и новый бот (setWebhook/setMyCommands, TELEGRAM_WEBHOOK_SECRET) | accepted | 2026-07-02 |
 
 ## Как добавлять ADR
 

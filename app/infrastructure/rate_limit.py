@@ -41,6 +41,8 @@ LIMIT_SET_PASSWORD = Limit(name="setpwd", capacity=10, window_seconds=60)
 # Telegram Mini App SSO: 30/min per IP (до HMAC) + 10/min per tg_user_id (после).
 LIMIT_TG_AUTH_IP = Limit(name="tg_auth_ip", capacity=30, window_seconds=60)
 LIMIT_TG_AUTH_USER = Limit(name="tg_auth_user", capacity=10, window_seconds=60)
+# Telegram webhook: 60/min per IP (до проверки секрет-токена), docs/08 §4.
+LIMIT_TG_WEBHOOK_IP = Limit(name="tg_webhook_ip", capacity=60, window_seconds=60)
 
 
 async def consume(limit: Limit, key: str) -> None:

@@ -31,6 +31,7 @@ EXEMPT_PATHS: frozenset[str] = frozenset(
         "/login/password",  # шаг-2: сессии ещё нет (защита — rate-limit + lockout)
         "/health",
         "/api/telegram/auth",  # защита — HMAC initData
+        "/api/telegram/webhook",  # защита — секрет-токен X-Telegram-Bot-Api-Secret-Token
         "/api/webhooks/twilio/sms",  # защита — подпись Twilio
     }
 )

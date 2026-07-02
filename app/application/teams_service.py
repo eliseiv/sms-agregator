@@ -111,11 +111,18 @@ class TeamsService:
                 "Команда не пуста — сначала распустите участников",
                 status_code=409,
             )
+        # Номера команды не удаляются: FK ON DELETE SET NULL → возврат в unassigned-пул
+        # (ADR-0009). Фиксируем число ставших unassigned в аудите (docs/05 §5).
+        unassigned_count = (await self._teams.numbers_counts([team_id])).get(team_id, 0)
         await self._teams.delete(team_id)
         await self._audit.log(
             actor_user_id=actor_user_id,
             action="team_delete",
-            details={"team_id": team_id, "name": team.name},
+            details={
+                "team_id": team_id,
+                "name": team.name,
+                "unassigned_numbers": unassigned_count,
+            },
             ip=ip,
             user_agent=user_agent,
         )

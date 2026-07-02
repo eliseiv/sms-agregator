@@ -49,12 +49,21 @@ class TelegramApiClient:
             return httpx.AsyncClient(timeout=timeout, proxy=self.proxy_url, verify=True)
         return httpx.AsyncClient(timeout=timeout, verify=True)
 
-    async def send_message(self, chat_id: int, text: str) -> dict[str, Any]:
+    async def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload_json: dict[str, Any] = {"chat_id": chat_id, "text": text}
+        if reply_markup is not None:
+            payload_json["reply_markup"] = reply_markup
         try:
             async with self._build_client(timeout=30) as client:
                 response = await client.post(
                     f"{self.base_url}/sendMessage",
-                    json={"chat_id": chat_id, "text": text},
+                    json=payload_json,
                 )
         except httpx.HTTPError as exc:
             raise TelegramApiError(
@@ -80,6 +89,40 @@ class TelegramApiClient:
         raise TelegramApiError(
             f"Telegram sendMessage failed: HTTP {response.status_code}: {description}"
         )
+
+    async def _call_method(
+        self, method: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Вызвать произвольный Bot API-метод (деплой-операции). Не логирует токен."""
+        try:
+            async with self._build_client(timeout=30) as client:
+                response = await client.post(f"{self.base_url}/{method}", json=payload)
+        except httpx.HTTPError as exc:
+            raise TelegramApiError(
+                f"Telegram network error: {type(exc).__name__}"
+            ) from exc
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise TelegramApiError(
+                f"Telegram {method}: invalid JSON, HTTP {response.status_code}"
+            ) from exc
+        if response.status_code < 400 and data.get("ok"):
+            return data
+        description = str(data.get("description") or response.reason_phrase or "")
+        raise TelegramApiError(
+            f"Telegram {method} failed: HTTP {response.status_code}: {description}"
+        )
+
+    async def set_webhook(self, *, url: str, secret_token: str) -> dict[str, Any]:
+        """setWebhook с секрет-токеном (ADR-0010, деплой-операция)."""
+        return await self._call_method(
+            "setWebhook", {"url": url, "secret_token": secret_token}
+        )
+
+    async def set_my_commands(self, commands: list[dict[str, str]]) -> dict[str, Any]:
+        """setMyCommands — меню бота (только /start, ADR-0010)."""
+        return await self._call_method("setMyCommands", {"commands": commands})
 
 
 _client: TelegramApiClient | None = None

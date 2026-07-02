@@ -21,8 +21,8 @@ from scripts.migrate_sqlite_to_pg import migrate
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 _ROOT = Path(__file__).resolve().parents[2]
-_DATA_DB_SA = "postgresql+asyncpg://sms:sms@localhost:55620/smsdata"
-_DATA_DB_DSN = "postgresql://sms:sms@localhost:55620/smsdata"
+_DATA_DB_SA = "postgresql+asyncpg://sms:sms@localhost:63812/smsdata"
+_DATA_DB_DSN = "postgresql://sms:sms@localhost:63812/smsdata"
 
 _LEGACY_SCHEMA = """
 CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT, is_active INTEGER, created_at TEXT);

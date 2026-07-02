@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     TG_PENDING_LINK_TTL_SECONDS: int = Field(default=900, ge=60, le=86_400)
     TG_MAX_LINKS_PER_USER: int = Field(default=10, ge=1, le=100)
     TELEGRAM_WEBAPP_URL: str = ""
+    # Секрет-токен вебхука (ADR-0010): сверяется с X-Telegram-Bot-Api-Secret-Token.
+    TELEGRAM_WEBHOOK_SECRET: str = ""
 
     # --- Telegram Bot / delivery ---
     TELEGRAM_BOT_TOKEN: str = ""

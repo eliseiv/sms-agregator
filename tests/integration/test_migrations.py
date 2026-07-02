@@ -15,7 +15,7 @@ import pytest
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 _ROOT = Path(__file__).resolve().parents[2]
-_MIG_DB = "postgresql+asyncpg://sms:sms@localhost:55620/smsmig"
+_MIG_DB = "postgresql+asyncpg://sms:sms@localhost:63812/smsmig"
 
 
 def _alembic(*args: str, database_url: str) -> subprocess.CompletedProcess[str]:

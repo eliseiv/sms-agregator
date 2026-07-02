@@ -19,7 +19,7 @@ from urllib.parse import urlencode
 # --- ENV: выставить ДО импорта shared.config (get_settings кэшируется) --------
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-TEST_DB_HOST_PORT = "55620"
+TEST_DB_HOST_PORT = "63812"
 TEST_DATABASE_URL = f"postgresql+asyncpg://sms:sms@localhost:{TEST_DB_HOST_PORT}/sms"
 TEST_REDIS_URL = "redis://localhost:63811/0"
 TEST_BOT_TOKEN = "123456:AAExampleTestBotTokenForHMACVerification"
@@ -35,6 +35,8 @@ os.environ.update(
         "VERIFY_TWILIO_SIGNATURE": "false",
         "TELEGRAM_BOT_TOKEN": TEST_BOT_TOKEN,
         "TELEGRAM_PROXY_URL": "",
+        "TELEGRAM_WEBHOOK_SECRET": "test-webhook-secret-xyz",
+        "TELEGRAM_WEBAPP_URL": "https://example.test/app",
         "LOGIN_FAILURE_THRESHOLD": "3",
         "LOGIN_LOCKOUT_MINUTES": "15",
         "TG_AUTH_INIT_DATA_TTL_SECONDS": "300",
@@ -144,6 +146,7 @@ class FakeTelegram:
     def __init__(self, *, configured: bool = True, behavior=None) -> None:
         self._configured = configured
         self.calls: list[tuple[int, str]] = []
+        self.markups: list[dict | None] = []
         # behavior: callable(chat_id, text) -> None | raises
         self._behavior = behavior
 
@@ -151,8 +154,9 @@ class FakeTelegram:
     def is_configured(self) -> bool:
         return self._configured
 
-    async def send_message(self, chat_id: int, text: str):
+    async def send_message(self, chat_id: int, text: str, *, reply_markup=None):
         self.calls.append((chat_id, text))
+        self.markups.append(reply_markup)
         if self._behavior is not None:
             self._behavior(chat_id, text)
         return {"ok": True}

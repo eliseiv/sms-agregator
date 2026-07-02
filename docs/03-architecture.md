@@ -10,13 +10,14 @@
 flowchart LR
     Twilio[[Twilio SMS]] -->|POST webhook| App
     Browser[[Telegram Mini App / Browser]] -->|HTTPS| App
+    TG[[Telegram Bot API]] -->|POST /api/telegram/webhook /start| App
     App[FastAPI app :8000] -->|asyncpg| PG[(PostgreSQL 16)]
     App -->|redis.asyncio| Redis[(Redis 7)]
-    App -->|Bot API sendMessage| TG[[Telegram Bot API]]
+    App -->|Bot API sendMessage / setWebhook| TG
     Migrate[migrate one-off: alembic upgrade head] --> PG
 ```
 
-Один бот обслуживает и Mini App-логин, и push-доставку (в отличие от нескольких ботов mail-agregator). Long polling и `/start`-подписка удалены (см. [ADR-0005](./adr/ADR-0005-sms-addressing-via-team.md)).
+Один бот обслуживает Mini App-логин, push-доставку и приём апдейтов через **webhook** (в отличие от нескольких ботов mail-agregator). Long polling удалён ([ADR-0005](./adr/ADR-0005-sms-addressing-via-team.md)); вместо него апдейты бота приходят на `POST /api/telegram/webhook` ([ADR-0010](./adr/ADR-0010-telegram-webhook-and-new-bot.md)). Бот обрабатывает **только `/start`** (отвечает кнопкой `web_app` на `TELEGRAM_WEBAPP_URL`); прочие апдейты — no-op. Токен бота — новый (`TELEGRAM_BOT_TOKEN`), общий для HMAC initData и `sendMessage`; webhook защищён `TELEGRAM_WEBHOOK_SECRET`.
 
 ## Пакеты и слои
 
@@ -39,7 +40,8 @@ app/
       webhooks.py            # POST /api/webhooks/twilio/sms
       auth.py                # /login, /login/password, /set-password, /logout
       telegram_auth.py       # POST /api/telegram/auth (Mini App SSO)
-      admin.py               # /api/admin/users, /api/admin/teams, /api/admin/teams/{id}/leader (set_leader)
+      telegram_webhook.py    # POST /api/telegram/webhook (только /start → web_app-кнопка; секрет-токен) — ADR-0010
+      admin.py               # /api/admin/users, /api/admin/numbers (list/allocate — ADR-0009), /api/admin/teams, /api/admin/teams/{id}/leader (set_leader)
       admin_ui.py            # GET /admin, /admin/teams (SSR)
       landing.py             # GET / (диспетчер по роли), GET /app (SSR landing участника/лидера) — ADR-0008
       numbers.py             # /api/numbers CRUD
@@ -65,7 +67,8 @@ app/
   telegram/
     init_data.py             # verify_init_data() — HMAC-SHA256 + auth_date TTL
 scripts/
-  migrate_sqlite_to_pg.py    # one-off миграция данных
+  migrate_sqlite_to_pg.py    # one-off полная миграция данных (ADR-0006)
+  import_numbers.py          # one-off импорт номеров из SQLite как unassigned (ADR-0009)
 ```
 
 ## Порядок middleware
@@ -80,7 +83,7 @@ CSRF → MethodOverride → Session → SecurityHeaders → RequestID
 - **SecurityHeaders** — CSP, `X-Content-Type-Options`, `Referrer-Policy` и др. (см. [08-security.md](./08-security.md)).
 - **Session** — читает cookie `sms_session`, резолвит сессию из Redis в `request.state.session`.
 - **MethodOverride** — поддержка `_method=DELETE/PATCH` из HTML-форм (SSR без JS-фетча).
-- **CSRF** (внешний) — проверка double-submit токена для небезопасных методов; endpoints webhook и `/api/telegram/auth` — в exempt-списке (защита — подпись Twilio / HMAC initData).
+- **CSRF** (внешний) — проверка double-submit токена для небезопасных методов; endpoints `/api/webhooks/twilio/sms`, `/api/telegram/auth`, `/api/telegram/webhook` — в exempt-списке (защита — подпись Twilio / HMAC initData / секрет-токен вебхука).
 
 ## Доступ к БД и сессии
 
@@ -126,7 +129,7 @@ sequenceDiagram
     else новое
         SVC->>DB: inbound_sms.create(team_id=phone.team_id | NULL, raw_payload JSONB)
     end
-    alt team_id IS NULL (неизвестный номер)
+    alt team_id IS NULL (неизвестный ИЛИ unassigned номер)
         SVC->>SVC: warning; SMS сохранён, доставок нет
     else team_id найден (и для нового, и для дубликата)
             SVC->>DB: UserRepository.recipients_for_team(team_id)  (join telegram_links dead_at IS NULL)
@@ -149,6 +152,8 @@ sequenceDiagram
         end
     WH-->>TW: 200 <Response></Response>
 ```
+
+> **Unassigned-номер ([ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)).** Если `find_by_phone(to)` вернул номер, но он unassigned (`team_id IS NULL`), то `inbound_sms.team_id = phone.team_id = NULL` — обработка идёт по ветке `team_id IS NULL` **идентично неизвестному номеру** (SMS сохранён, `recipients_for_team` не вызывается, доставок нет). Отдельной ветки для unassigned не вводится.
 
 `delivery_retry_loop` (в `workers.py`) периодически берёт `status IN (pending, failed)` с `attempts < DELIVERY_MAX_ATTEMPTS`, берёт chat_id из снимка delivery, проверяет живость привязки, повторяет; 403 → dead.
 
@@ -219,7 +224,7 @@ flowchart TD
 ## Что удаляется из текущего кода
 
 - `app/infrastructure/db.py` (sqlite `Database`, глобальный `db`), синхронные `Sqlite*Repository`.
-- Long polling: `telegram_polling_loop`, `handle_telegram_command`, `/start`/`/my_projects`/`/numbers`.
+- Long polling: `telegram_polling_loop`, `handle_telegram_command`, команды `/my_projects`/`/numbers`. **`/start` не удаляется**, а переносится в webhook-обработчик `POST /api/telegram/webhook` (только кнопка Mini App, [ADR-0010](./adr/ADR-0010-telegram-webhook-and-new-bot.md)).
 - Автогенерация проектов/номеров: `_get_or_create_auto_project`, `ensure_all_users_have_project`, `_ensure_number_mapping`, `upsert_user`.
 - `twilio_numbers_sync_loop` — отключается для MVP.
 - HTTP Basic / `X-Admin-Token` авторизация admin-API.

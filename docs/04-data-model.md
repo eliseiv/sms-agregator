@@ -2,7 +2,7 @@
 
 СУБД — **PostgreSQL 16**. Кодировка UTF-8. Все временные поля — `TIMESTAMPTZ` в UTC. Все PK — `BIGINT` (`BIGSERIAL`/identity). JSONB для сырых payload'ов.
 
-Источники решений: [ADR-0001](./adr/ADR-0001-postgres-sqlalchemy-async.md) (стек/схема), [ADR-0003](./adr/ADR-0003-roles-and-teams.md) (роли/команды), [ADR-0004](./adr/ADR-0004-telegram-mini-app-sso.md) (`telegram_links`), [ADR-0005](./adr/ADR-0005-sms-addressing-via-team.md) (адресация), [ADR-0006](./adr/ADR-0006-data-migration-sqlite-to-pg.md) (миграция).
+Источники решений: [ADR-0001](./adr/ADR-0001-postgres-sqlalchemy-async.md) (стек/схема), [ADR-0003](./adr/ADR-0003-roles-and-teams.md) (роли/команды), [ADR-0004](./adr/ADR-0004-telegram-mini-app-sso.md) (`telegram_links`), [ADR-0005](./adr/ADR-0005-sms-addressing-via-team.md) (адресация), [ADR-0006](./adr/ADR-0006-data-migration-sqlite-to-pg.md) (миграция), [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md) (unassigned-номера: `phone_numbers.team_id` NULLABLE + `ON DELETE SET NULL`).
 
 Общие конвенции: `created_at`/`updated_at` — `TIMESTAMPTZ NOT NULL DEFAULT now()`; триггер `set_updated_at()` (BEFORE UPDATE) обновляет `updated_at`; частичные индексы по `is_active`/`dead_at`.
 
@@ -12,7 +12,7 @@
 erDiagram
     teams  ||--o| users : "leader (1:1 via teams.leader_user_id)"
     teams  ||--o{ users : "members (1:N via users.team_id)"
-    teams  ||--o{ phone_numbers : "owns"
+    teams  ||--o{ phone_numbers : "owns (nullable = unassigned)"
     teams  ||--o{ inbound_sms : "addressed_to (nullable)"
     users  ||--o{ telegram_links : "linked (1:N)"
     users  ||--o{ deliveries : "recipient"
@@ -50,7 +50,7 @@ erDiagram
     phone_numbers {
         bigint id PK
         text phone_number UK "E.164"
-        bigint team_id FK "NOT NULL; ON DELETE CASCADE"
+        bigint team_id FK "nullable (NULL=unassigned); ON DELETE SET NULL"
         bigint added_by_user_id FK "nullable; ON DELETE SET NULL"
         text label "nullable"
         boolean is_active
@@ -178,14 +178,16 @@ erDiagram
 | --- | --- | --- | --- |
 | `id` | BIGSERIAL | PK | |
 | `phone_number` | TEXT | NOT NULL, UNIQUE | Номер в формате E.164 (нормализуется `normalize_phone`). |
-| `team_id` | BIGINT | NOT NULL, FK → `teams(id)` ON DELETE CASCADE | Команда-владелец номера. |
-| `added_by_user_id` | BIGINT | NULL, FK → `users(id)` ON DELETE SET NULL | Кто добавил (аудит). Любой участник команды. |
+| `team_id` | BIGINT | **NULL**, FK → `teams(id)` **ON DELETE SET NULL** | Команда-владелец номера. **`NULL` = unassigned** (номер в пуле, не привязан к команде; см. [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)). Удаление команды → её номера становятся unassigned (SET NULL), не удаляются. |
+| `added_by_user_id` | BIGINT | NULL, FK → `users(id)` ON DELETE SET NULL | Кто добавил (аудит). Любой участник команды; `NULL` для импортированных unassigned-номеров ([07-deployment.md](./07-deployment.md)). |
 | `label` | TEXT | NULL | Ярлык. |
 | `is_active` | BOOLEAN | NOT NULL DEFAULT true | |
 | `created_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | |
 | `updated_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | Триггер `set_updated_at()`. |
 
-**Индексы:** UNIQUE(`phone_number`); `INDEX (team_id)`.
+**Индексы:** UNIQUE(`phone_number`); `INDEX (team_id)` — **непартиальный** (btree индексирует и NULL): обслуживает и фильтр assigned (`team_id = :id`), и unassigned (`team_id IS NULL`) для `GET /api/admin/numbers` ([ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)).
+
+**Инвариант unassigned (нормативно):** `team_id IS NULL` — легитимное состояние (пул). SMS на unassigned-номер обрабатывается как неизвестный: `inbound_sms.team_id = phone.team_id = NULL` → получателей нет (см. [03-architecture.md](./03-architecture.md) §«Поток приёма»). Инвариант «у номера всегда есть команда» снят [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md).
 
 ---
 
@@ -236,7 +238,7 @@ erDiagram
 | --- | --- | --- | --- |
 | `id` | BIGSERIAL | PK | |
 | `actor_user_id` | BIGINT | NOT NULL | id действующего (обычно super_admin). **Без FK** — запись переживает удаление пользователя. |
-| `action` | TEXT | NOT NULL | Enum-string: `admin_login`, `admin_logout`, `create_user`, `reset_password`, `delete_user`, `lockout_triggered`, `team_create`, `team_rename`, `team_delete`, `team_leader_set`, `user_team_change`, `number_added`, `number_removed`, `telegram_link_created`, `telegram_link_revoked`, `telegram_link_dead_marked`, `telegram_link_rebound`. |
+| `action` | TEXT | NOT NULL | Enum-string: `admin_login`, `admin_logout`, `create_user`, `reset_password`, `delete_user`, `lockout_triggered`, `team_create`, `team_rename`, `team_delete`, `team_leader_set`, `user_team_change`, `number_added`, `number_removed`, `number_team_assigned` (admin назначил/снял команду у номера — [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)), `telegram_link_created`, `telegram_link_revoked`, `telegram_link_dead_marked`, `telegram_link_rebound`. |
 | `target_user_id` | BIGINT | NULL | Затронутый пользователь. |
 | `target_username` | TEXT | NULL | Снимок username (на случай delete). |
 | `details` | JSONB | NULL | Структурированные детали (`{telegram_user_id, team_id, phone_number, ...}`). |
@@ -272,6 +274,7 @@ erDiagram
 
 - `alembic.ini`, `migrations/env.py` (async engine, `import shared.models`, `target_metadata = Base.metadata`, `compare_type=True`).
 - `migrations/versions/<rev>_initial_schema.py` — все таблицы, FK (с DEFERRABLE где указано), CHECK, UNIQUE, partial-индексы, триггеры/функции; обратимый `downgrade`.
+- `migrations/versions/<rev>_phone_numbers_team_nullable.py` — **новая ревизия** ([ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)): `phone_numbers.team_id` → NULLABLE; пересоздать FK `phone_numbers.team_id → teams(id)` с `ON DELETE SET NULL` (вместо `ON DELETE CASCADE`); индекс `(team_id)` остаётся непартиальным. `downgrade`: обратно `NOT NULL` + `ON DELETE CASCADE` (при наличии `team_id IS NULL` строк downgrade завершится ошибкой NOT NULL — ожидаемо, откат применим только на пустом пуле). Обновить SQLAlchemy-модель `phone_numbers` в `shared/models/`.
 - Требование: `alembic revision --autogenerate` после применения даёт **пустой** diff (см. [06-testing-strategy.md](./06-testing-strategy.md)).
 
 ---
@@ -294,3 +297,7 @@ erDiagram
 **Инварианты после миграции:** у каждой непустой команды ровно один `group_leader`; нет `group_member`/`group_leader` с `team_id IS NULL`; повторный прогон скрипта не создаёт дублей (`ON CONFLICT DO NOTHING`, сохранение id, `setval` sequences).
 
 > `Q-DATA-1` (см. [99-open-questions.md](./99-open-questions.md)): сохранять ли `projects.description` (добавить `teams.description`)? По умолчанию — не сохранять (в текущем UI не используется).
+
+### Отдельный импорт unassigned-номеров ([ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md))
+
+Не путать с полной миграцией выше. Одноразовый скрипт `scripts/import_numbers.py` переносит из SQLite `twilio_numbers` **только** `phone_number`, `label`, `is_active` в `phone_numbers` как **unassigned** (`team_id=NULL`, `added_by_user_id=NULL`), идемпотентно `INSERT ... ON CONFLICT (phone_number) DO NOTHING`. projects/teams/users/deliveries НЕ переносятся. Эксплуатация — [07-deployment.md](./07-deployment.md).

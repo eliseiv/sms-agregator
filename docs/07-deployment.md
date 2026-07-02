@@ -85,10 +85,13 @@ flowchart LR
 | `TG_PENDING_LINK_TTL_SECONDS` | `900` | TTL pending-токена Mini App SSO. |
 | `TG_MAX_LINKS_PER_USER` | `10` | Мягкий потолок привязок на пользователя. |
 | `TELEGRAM_WEBAPP_URL` | `https://novirell.shop` | URL Mini App (кнопка бота / CSP `frame-ancestors`). |
+| `TELEGRAM_WEBHOOK_SECRET` | `<random ≥32 симв.>` | **Новый** ([ADR-0010](./adr/ADR-0010-telegram-webhook-and-new-bot.md)). Секрет-токен вебхука: сверяется с заголовком `X-Telegram-Bot-Api-Secret-Token` в `POST /api/telegram/webhook` и передаётся в `setWebhook(secret_token=...)`. Только через env/secret manager. |
 
 ### Сохраняемые
 
 `SERVICE_NAME`, `PUBLIC_BASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_PROXY_URL`, `DELIVERY_RETRY_INTERVAL_SECONDS`, `DELIVERY_MAX_ATTEMPTS`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `VERIFY_TWILIO_SIGNATURE`, `TWILIO_SIGNATURE_HEADER`, `TIMEZONE`.
+
+> **Смена бота ([ADR-0010](./adr/ADR-0010-telegram-webhook-and-new-bot.md)):** `TELEGRAM_BOT_TOKEN` заменяется токеном **нового** бота — он используется и для HMAC-валидации initData (`/api/telegram/auth`), и для `sendMessage`/доставки, и для webhook-операций. После смены токена старые initData инвалидируются, webhook/меню нужно настроить заново (см. §«Одноразовые операции Telegram»).
 
 **Production-значения домена:**
 - `PUBLIC_BASE_URL=https://novirell.shop`
@@ -120,6 +123,40 @@ docker compose run --rm app python -m scripts.migrate_sqlite_to_pg \
 ```
 
 Скрипт идемпотентен (`ON CONFLICT DO NOTHING`, сохранение id, `setval` sequences), печатает отчёт по строкам и списку осиротевших/мульти-проектных пользователей (см. [ADR-0006](./adr/ADR-0006-data-migration-sqlite-to-pg.md)). Проверки после прогона — [06-testing-strategy.md](./06-testing-strategy.md) §20.
+
+## Одноразовый импорт номеров как unassigned (SQLite → PostgreSQL)
+
+Источник — [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md). Отдельный скрипт `scripts/import_numbers.py` — импорт ~328 номеров из старой SQLite (`data/service.db`, таблица `twilio_numbers`: `phone_number`, `label`, `is_active`) в `phone_numbers` как **unassigned** (`team_id = NULL`, `added_by_user_id = NULL`). **Только номера** — projects/teams/users/deliveries НЕ переносятся (это независимо от полной миграции [ADR-0006](./adr/ADR-0006-data-migration-sqlite-to-pg.md)).
+
+```
+docker compose run --rm app python -m scripts.import_numbers \
+  --sqlite /path/to/service.db --database-url "$DATABASE_URL"
+```
+
+Идемпотентен: `INSERT ... ON CONFLICT (phone_number) DO NOTHING` — повторный прогон не создаёт дублей и не перезаписывает уже назначенные номера. Печатает отчёт: прочитано / вставлено / пропущено (конфликт). После импорта super_admin распределяет номера по командам через `/admin` (секция unassigned) → `PATCH /api/admin/numbers/{id}`. Проверки — [06-testing-strategy.md](./06-testing-strategy.md) §21.
+
+## Одноразовые операции Telegram (webhook / меню / домен)
+
+Источник — [ADR-0010](./adr/ADR-0010-telegram-webhook-and-new-bot.md). Выполняются один раз при развёртывании нового бота (вне CD-цикла), после того как `app` доступен по `https://novirell.shop`:
+
+1. **`setWebhook`** — зарегистрировать вебхук с секрет-токеном:
+   ```
+   curl -sS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+     -d "url=https://novirell.shop/api/telegram/webhook" \
+     -d "secret_token=${TELEGRAM_WEBHOOK_SECRET}"
+   ```
+   Telegram будет слать апдейты с заголовком `X-Telegram-Bot-Api-Secret-Token: ${TELEGRAM_WEBHOOK_SECRET}`; приложение сверяет его (§ [05-api-contracts.md](./05-api-contracts.md) §3a).
+2. **`setMyCommands`** — меню бота содержит **только `/start`** (либо пустое):
+   ```
+   curl -sS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setMyCommands" \
+     -H "Content-Type: application/json" \
+     -d '{"commands":[{"command":"start","description":"Открыть приложение"}]}'
+   ```
+   Прочие команды не регистрируются (весь функционал — в Mini App).
+3. **Домен Mini App в @BotFather (ручной шаг, вне кода):** у нового бота задать домен Mini App `novirell.shop` (BotFather → Bot Settings → Configure Mini App / Domain). Без этого кнопка `web_app` не откроется.
+4. **Проверка:** `getWebhookInfo` показывает `url=https://novirell.shop/api/telegram/webhook`, `has_custom_certificate=false`, отсутствие ошибок доставки; `/start` в чате бота возвращает приветствие + кнопку «Открыть приложение».
+
+> При смене бот-токена (новый бот) шаги 1–3 повторяются для нового бота; старый вебхук на прежнем боте можно снять `deleteWebhook`.
 
 ## Health и наблюдаемость
 
@@ -159,6 +196,8 @@ docker compose run --rm app python -m scripts.migrate_sqlite_to_pg \
    ```
    Проверить инварианты миграции (см. [06-testing-strategy.md](./06-testing-strategy.md) §20). Шаг пропускается для чистой установки.
 5. Поднять `app` (`docker-compose.prod.yml`, `mas-net`, `127.0.0.1:8137`), проверить `GET http://127.0.0.1:8137/health` и `https://novirell.shop/health` через edge.
-6. Настроить Twilio webhook на `https://novirell.shop/api/webhooks/twilio/sms` и Mini App-кнопку бота на `https://novirell.shop`.
+6. **(Опционально)** Импорт номеров как unassigned — если есть legacy `service.db` с `twilio_numbers` (см. §«Одноразовый импорт номеров»): `docker compose run --rm app python -m scripts.import_numbers --sqlite /path/to/service.db --database-url "$DATABASE_URL"`. Затем распределить пул через `/admin`.
+7. Настроить Twilio webhook на `https://novirell.shop/api/webhooks/twilio/sms`.
+8. **Telegram (новый бот, [ADR-0010](./adr/ADR-0010-telegram-webhook-and-new-bot.md)):** задать домен Mini App `novirell.shop` в @BotFather; `setWebhook(url=https://novirell.shop/api/telegram/webhook, secret_token=$TELEGRAM_WEBHOOK_SECRET)`; `setMyCommands` только `/start`; проверить `/start` в чате бота (см. §«Одноразовые операции Telegram»).
 
-> Дублирующая справка по one-off команде переноса данных — см. шаг 4 выше и [ADR-0006](./adr/ADR-0006-data-migration-sqlite-to-pg.md).
+> Дублирующая справка по one-off командам переноса/импорта данных — см. шаги 4, 6 выше, [ADR-0006](./adr/ADR-0006-data-migration-sqlite-to-pg.md) и [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md).

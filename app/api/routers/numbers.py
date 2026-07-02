@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.deps import CurrentScope, DbSession, require_authenticated
 from app.api.schemas import CreateNumberRequest
+from app.api.serializers import serialize_number
 from app.application.audit import AuditWriter
 from app.domain.services import normalize_phone
 from app.exceptions import ApiError, ConflictError, NotFoundError
@@ -41,19 +42,6 @@ async def _read_body(request: Request) -> dict[str, Any]:
     return {k: v for k, v in form.items() if k not in {"csrf_token", "_method"}}
 
 
-def _serialize(number: Any, team_name: str | None) -> dict[str, Any]:
-    return {
-        "id": number.id,
-        "phone_number": number.phone_number,
-        "team_id": number.team_id,
-        "team_name": team_name,
-        "label": number.label,
-        "is_active": number.is_active,
-        "added_by_user_id": number.added_by_user_id,
-        "created_at": number.created_at.isoformat(),
-    }
-
-
 @router.get("")
 async def list_numbers(
     db: DbSession, scope: CurrentScope, team_id: int | None = Query(default=None)
@@ -71,7 +59,10 @@ async def list_numbers(
             return JSONResponse(content={"numbers": []})
         numbers = await repo.list_by_team(scope.team_id)
     team_map = {t.id: t.name for t in await teams.list_all()}
-    items = [_serialize(n, team_map.get(n.team_id)) for n in numbers]
+    items = [
+        serialize_number(n, team_map.get(n.team_id) if n.team_id is not None else None)
+        for n in numbers
+    ]
     return JSONResponse(content={"numbers": items})
 
 

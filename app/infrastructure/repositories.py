@@ -111,6 +111,32 @@ class PhoneNumberRepository:
         )
         return list((await self._s.execute(stmt)).scalars().all())
 
+    async def list_filtered(
+        self, *, assignment: str, team_id: int | None
+    ) -> list[PhoneNumber]:
+        """Admin-выборка (ADR-0009): фильтр по assignment и/или team_id.
+
+        ``assignment``: ``all`` | ``assigned`` (team_id IS NOT NULL) |
+        ``unassigned`` (team_id IS NULL). ``team_id`` — фильтр по конкретной
+        команде (несовместимость с ``unassigned`` проверяет роутер).
+        """
+        stmt = select(PhoneNumber)
+        if team_id is not None:
+            stmt = stmt.where(PhoneNumber.team_id == team_id)
+        elif assignment == "assigned":
+            stmt = stmt.where(PhoneNumber.team_id.is_not(None))
+        elif assignment == "unassigned":
+            stmt = stmt.where(PhoneNumber.team_id.is_(None))
+        stmt = stmt.order_by(PhoneNumber.created_at.desc())
+        return list((await self._s.execute(stmt)).scalars().all())
+
+    async def set_team(self, *, number_id: int, team_id: int | None) -> None:
+        await self._s.execute(
+            update(PhoneNumber)
+            .where(PhoneNumber.id == number_id)
+            .values(team_id=team_id, updated_at=datetime.now(UTC))
+        )
+
     async def find_by_phone(self, phone_number: str) -> PhoneNumber | None:
         stmt = select(PhoneNumber).where(PhoneNumber.phone_number == phone_number)
         return (await self._s.execute(stmt)).scalar_one_or_none()
@@ -122,7 +148,7 @@ class PhoneNumberRepository:
         self,
         *,
         phone_number: str,
-        team_id: int,
+        team_id: int | None,
         added_by_user_id: int | None,
         label: str | None,
     ) -> PhoneNumber:

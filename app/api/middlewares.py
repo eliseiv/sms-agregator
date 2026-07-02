@@ -107,6 +107,7 @@ _OVERRIDE_REGEX_PATHS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^/api/admin/users/\d+$"),  # PATCH / DELETE override
     re.compile(r"^/api/admin/teams/\d+$"),  # PATCH / DELETE override
     re.compile(r"^/api/admin/teams/\d+/leader$"),  # PATCH override
+    re.compile(r"^/api/admin/numbers/\d+$"),  # PATCH override (назначение команды)
     re.compile(r"^/api/numbers/\d+$"),  # DELETE override
 )
 _ALLOWED_OVERRIDE_METHODS: frozenset[str] = frozenset({"DELETE", "PATCH", "PUT"})

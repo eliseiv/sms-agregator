@@ -33,3 +33,5 @@ Bootstrap-версия документации под крупную дораб
 - Адресация SMS: номер → команда → все участники команды с живой `telegram_links` (см. [ADR-0005](./adr/ADR-0005-sms-addressing-via-team.md)).
 - Миграция данных SQLite → PostgreSQL одноразовым скриптом (см. [ADR-0006](./adr/ADR-0006-data-migration-sqlite-to-pg.md)).
 - Production-деплой за общим edge-nginx соседа (`mas-nginx`/`mas-net`), домен novirell.shop, additive vhost, host certbot (см. [ADR-0007](./adr/ADR-0007-deploy-behind-shared-edge-nginx.md)).
+- Unassigned-номера: `phone_numbers.team_id` NULLABLE (`ON DELETE SET NULL`), админское распределение по командам, импорт легаси-номеров как unassigned (см. [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)).
+- Приём апдейтов бота через webhook (только `/start` → кнопка Mini App), секрет-токен, новый бот-токен (см. [ADR-0010](./adr/ADR-0010-telegram-webhook-and-new-bot.md)).

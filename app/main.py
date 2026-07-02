@@ -18,11 +18,13 @@ from app.api.middlewares import (
     SessionMiddleware,
 )
 from app.api.routers.admin import router as admin_router
+from app.api.routers.admin_numbers import router as admin_numbers_router
 from app.api.routers.admin_ui import router as admin_ui_router
 from app.api.routers.auth import router as auth_router
 from app.api.routers.landing import router as landing_router
 from app.api.routers.numbers import router as numbers_router
 from app.api.routers.telegram_auth import router as telegram_auth_router
+from app.api.routers.telegram_webhook import router as telegram_webhook_router
 from app.api.routers.webhooks import router as webhook_router
 from app.api.schemas import HealthResponse
 from app.application.auth_service import seed_admin
@@ -93,7 +95,9 @@ def create_app() -> FastAPI:
     app.include_router(webhook_router)
     app.include_router(auth_router)
     app.include_router(telegram_auth_router)
+    app.include_router(telegram_webhook_router)
     app.include_router(admin_router)
+    app.include_router(admin_numbers_router)
     app.include_router(admin_ui_router)
     app.include_router(numbers_router)
     app.include_router(landing_router)

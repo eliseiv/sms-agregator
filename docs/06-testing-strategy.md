@@ -23,12 +23,14 @@
 1. `alembic upgrade head` → `downgrade base` → `upgrade head` — обратимость без ошибок.
 2. После `upgrade head` `alembic revision --autogenerate` даёт **пустой** diff (модели ↔ миграция согласованы).
 3. Проверка наличия всех CHECK (`users_role_team_invariant`, `users_username_lower_check`), UNIQUE (`inbound_sms_sid_uq`, `deliveries_sms_chat_uq`, `phone_numbers.phone_number`), триггеров (`set_updated_at`, лидерство), DEFERRABLE FK `users.team_id`.
+3a. **Unassigned-номера ([ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)):** `phone_numbers.team_id` — NULLABLE; FK `phone_numbers.team_id → teams(id)` имеет `ON DELETE SET NULL` (не CASCADE). Вставка номера с `team_id=NULL` проходит. Удаление команды с номерами → номера сохраняются с `team_id=NULL` (не удалены). Revision применяется/откатывается, autogenerate-diff пуст.
 
 ### Приём SMS
 4. Seed: команда T + user U (`team_id=T`, `role=group_leader`) + `telegram_links(U, chat_id, dead_at=NULL)` + номер N (`team_id=T`). `POST /api/webhooks/twilio/sms` (`MessageSid=SMt1`, `From`, `To=N`, `Body=hi`, `VERIFY_TWILIO_SIGNATURE=false`) → `200`; в БД: 1 `inbound_sms(team_id=T)` + 1 `deliveries(status=sent)`; мок `send_message` вызван с `chat_id`.
 5. **Мульти-получатель:** второй user той же команды с живой привязкой → 2 `deliveries`.
 6. **Идемпотентность:** повтор того же `MessageSid` → нет новых `inbound_sms`/`deliveries` (partial-UNIQUE + `try_reserve`).
 7. **Неизвестный номер:** `To` без `phone_numbers` → `inbound_sms(team_id=NULL)`, 0 доставок, `200`.
+7a. **Unassigned-номер ([ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)):** номер существует с `team_id=NULL` → `inbound_sms(team_id=NULL)`, `recipients_for_team` не вызывается, **0 доставок**, `200` (эквивалентно неизвестному номеру).
 8. **403 / dead-link:** мок `TelegramForbiddenError` → `deliveries.status='dead'` + `telegram_links.dead_at` заполнен; retry-loop не берёт `dead`.
 9. **Retry:** мок временной ошибки → `deliveries.status='failed'`; retry-loop повторяет; успех → `sent`.
 9a. **Crash-recovery fan-out (ADR-0005 §4).** Команда с 2 получателями (U1, U2). Симулировать обрыв после доставки U1 и до U2 (напр. `send_message` бросает у U2 / процесс прерван): в БД `deliveries` для U1 = `sent`, для U2 отсутствует или `pending`/`failed`. Затем повтор webhook с тем же `MessageSid` (дедуп-ветка) — проверить, что **не** делается ранний возврат: `recipients_for_team` + `try_reserve` вызваны снова, U1 не дублируется (idempotent), U2 добирается → `sent`. Альтернативно: `delivery_retry_loop` добирает U2. Итог: обоим доставлено ровно по одному разу, дублей нет.
@@ -48,8 +50,25 @@
 18. Валидный `initData`, есть сессия → self-heal → `200 {linked:false, healed:true}`; для уже-живой привязки того же user — NO-OP (строка/`created_at` не меняются, audit не пишется).
 19. Протухший `auth_date` → `401 init_data_expired`; подделанный hash → `401 invalid_init_data`; флуд → `429`.
 
-### Миграция данных
+### Миграция и импорт данных
 20. Прогон `migrate_sqlite_to_pg.py` на копии `service.db` → сверка `COUNT(*)` по таблицам; у каждой непустой команды ровно один `group_leader`; нет `group_member`/`group_leader` с `team_id IS NULL`; повторный прогон — без дублей.
+21. **Импорт номеров `import_numbers.py` ([ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)):** прогон на копии `service.db` → все `twilio_numbers` появились в `phone_numbers` с `team_id=NULL`, `added_by_user_id=NULL`, сохранены `phone_number`/`label`/`is_active`; projects/teams/users/deliveries НЕ созданы. **Идемпотентность:** повторный прогон — 0 новых строк (ON CONFLICT phone_number DO NOTHING); уже назначенные (team_id≠NULL) номера не перезаписываются.
+
+### Admin — группировка пользователей (Задача 1)
+22. **Сортировка `GET /api/admin/users` ([05](./05-api-contracts.md) §4):** сначала `super_admin`; затем по `team_name`; внутри команды — лидер первым (`is_leader=true`), затем участники по `username`. Поле `is_leader` корректно (true только для `teams.leader_user_id`).
+23. **SSR `GET /admin`:** контекст содержит `super_admins` (секция первой), `team_sections` (по `team_name`, лидер помечен и первый в `members`), `unassigned_numbers`, `teams`, `csrf_token`. Рендер `200`; лидер визуально помечен; секция администраторов — раньше командных.
+
+### Admin — номера и распределение (Задача 2, [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md))
+24. `GET /api/admin/numbers?assignment=unassigned` → только `team_id IS NULL`; `?assignment=assigned` → только `team_id IS NOT NULL`; `?team_id=<id>` → номера команды; `all` → все. Конфликт `team_id` + `assignment=unassigned` → `400 invalid_query`. Guard: `group_member`/`group_leader` → `403`.
+25. `PATCH /api/admin/numbers/{id}` `{team_id: T}` → номер привязан (audit `number_team_assigned`); `{team_id: null}` → снят (unassigned); несуществующий номер → `404 number_not_found`; несуществующая команда → `404 team_not_found`; не-админ → `403`.
+26. **Удаление команды сохраняет номера:** команда с номерами → `DELETE /api/admin/teams/{id}` (после опустошения от пользователей) → номера получают `team_id=NULL`, не удалены.
+
+### Telegram webhook (Задача 3, [ADR-0010](./adr/ADR-0010-telegram-webhook-and-new-bot.md))
+27. `POST /api/telegram/webhook` с верным `X-Telegram-Bot-Api-Secret-Token` и `message.text="/start"` → `200`; мок `send_message` вызван с `chat_id` и кнопкой `web_app` (url=`TELEGRAM_WEBAPP_URL`).
+28. Неверный/отсутствующий секрет-токен → `403 invalid_webhook_secret`, `send_message` не вызван, тело не обрабатывается.
+29. Прочий апдейт (иной текст / callback / edited_message) с верным секретом → `200`, `send_message` не вызван (no-op). `/help` и прочие команды не обрабатываются.
+30. Ошибка `send_message` (мок сети) при `/start` → обработчик всё равно `200` (не роняется); секрет-токен/тело не попадают в логи.
+31. Флуд по IP → `429` (rate-limit §4).
 
 ### Smoke
-21. `docker compose up` — порядок `postgres(healthy) → migrate(completed) → app`; `GET /health` → `200`.
+32. `docker compose up` — порядок `postgres(healthy) → migrate(completed) → app`; `GET /health` → `200`.

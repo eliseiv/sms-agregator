@@ -5,7 +5,7 @@
 ## Соглашения
 
 - **Cookies:** `sms_session` (сессия, HttpOnly), `sms_csrf` (double-submit, читается JS), `sms_setup` (setup-сессия при первом входе), `sms_login` (промежуточная сессия шага-1 логина), `sms_tg_pending` (pending-токен Mini App SSO, HttpOnly, короткоживущий).
-- **CSRF:** double-submit применяется к небезопасным методам (`POST/DELETE/PATCH`) **только когда у запроса уже есть cookie с CSRF-токеном** (`sms_csrf` при аутентифицированной `sms_session`, или `sms_setup`+CSRF на `/set-password`). Проверяется совпадение заголовка/поля `csrf_token` с cookie. **Exempt** (double-submit невозможен или не нужен): `POST /api/webhooks/twilio/sms` (подпись Twilio), `POST /api/telegram/auth` (HMAC initData), а также **`POST /login` и `POST /login/password`** — на этих шагах сессии и cookie `sms_csrf` ещё нет, поэтому CSRF-токен физически невозможен; их защищает rate-limit (`LIMIT_LOGIN` per IP / `LIMIT_LOGIN_USERNAME` per username, см. [08-security.md](./08-security.md) §4). Как только устанавливается setup-сессия (`/set-password`) или полноценная сессия (admin/numbers/logout) — CSRF обязателен.
+- **CSRF:** double-submit применяется к небезопасным методам (`POST/DELETE/PATCH`) **только когда у запроса уже есть cookie с CSRF-токеном** (`sms_csrf` при аутентифицированной `sms_session`, или `sms_setup`+CSRF на `/set-password`). Проверяется совпадение заголовка/поля `csrf_token` с cookie. **Exempt** (double-submit невозможен или не нужен): `POST /api/webhooks/twilio/sms` (подпись Twilio), `POST /api/telegram/auth` (HMAC initData), `POST /api/telegram/webhook` (секрет-токен `X-Telegram-Bot-Api-Secret-Token`, [ADR-0010](./adr/ADR-0010-telegram-webhook-and-new-bot.md)), а также **`POST /login` и `POST /login/password`** — на этих шагах сессии и cookie `sms_csrf` ещё нет, поэтому CSRF-токен физически невозможен; их защищает rate-limit (`LIMIT_LOGIN` per IP / `LIMIT_LOGIN_USERNAME` per username, см. [08-security.md](./08-security.md) §4). Как только устанавливается setup-сессия (`/set-password`) или полноценная сессия (admin/numbers/logout) — CSRF обязателен.
 - **Ошибки API (`/api/*`):** JSON `{"error": "<code>", "detail": "<человекочит.>"}` + соответствующий HTTP-код. Ошибки SSR-страниц (`/login`, `/admin`) — редирект/ре-рендер с флеш-сообщением.
 - **Guards (`app/api/deps.py`):**
   - `require_authenticated` — есть валидная `sms_session`.
@@ -89,12 +89,34 @@
 
 ---
 
+## 3a. Telegram webhook (приём апдейтов бота)
+
+Источник — [ADR-0010](./adr/ADR-0010-telegram-webhook-and-new-bot.md). Заменяет удалённый long polling ([ADR-0005](./adr/ADR-0005-sms-addressing-via-team.md)). Бот обрабатывает **только `/start`**; весь функционал — в Mini App.
+
+### `POST /api/telegram/webhook`
+- **Доступ:** публичный. **CSRF:** exempt (нет сессии; защита — секрет-токен). **Auth:** заголовок `X-Telegram-Bot-Api-Secret-Token`.
+- **Content-Type:** `application/json`. **Тело:** Telegram Update (as-is).
+- **Rate-limit:** per IP (см. [08-security.md](./08-security.md) §4).
+- **Валидация секрета:** `X-Telegram-Bot-Api-Secret-Token` обязан совпадать с `TELEGRAM_WEBHOOK_SECRET`. Несовпадение/отсутствие → `403 {"error":"invalid_webhook_secret"}` (constant-time compare), до разбора тела.
+- **Логика:**
+  - `message.text == "/start"` → `sendMessage(chat_id, приветствие)` с кнопкой `web_app` (reply/inline, `url = TELEGRAM_WEBAPP_URL` = `https://novirell.shop`) → `200`.
+  - **любой другой апдейт** (иной текст, callback, edited_message и т.п.) → `200` без действий (no-op). Прочих команд (в т.ч. `/help`) бот не обрабатывает.
+  - Ошибка `sendMessage` (сеть/Bot API) не роняет обработчик — логируется (без секретов) и возвращается `200` (Telegram не должен ретраить бесконечно).
+- **Логирование:** тело апдейта и токены **не** логируются (см. [08-security.md](./08-security.md) §9, §11); допускается лог факта «/start от chat_id=<id>» без чувствительного содержимого.
+- **Ответы:** `200` (обработано/no-op); `403 {"error":"invalid_webhook_secret"}`; `429` — rate-limit.
+
+> **Настройка webhook и меню** (`setWebhook` с `secret_token`, `setMyCommands` только `/start`) — одноразовые операции деплоя, см. [07-deployment.md](./07-deployment.md). Домен Mini App в @BotFather (`novirell.shop`) — ручная предпосылка.
+
+---
+
 ## 4. Admin — пользователи
 
 Все — `require_admin`. Scope-guard: super_admin действует над любыми пользователями.
 
 ### `GET /api/admin/users`
-- **Ответ `200`:** `{"users": [{"id","username","display_name","role","team_id","team_name","password_reset_required","has_telegram_link","created_at","last_login_at"}]}`.
+- **Ответ `200`:** `{"users": [{"id","username","display_name","role","team_id","team_name","is_leader","password_reset_required","has_telegram_link","created_at","last_login_at"}]}`.
+- **`is_leader`** — `true`, если пользователь является лидером своей команды (`teams.leader_user_id = users.id`); используется для пометки лидера в UI-группировке.
+- **Сортировка (нормативно, для группировки на `/admin`):** записи упорядочены так, чтобы клиент/SSR мог сгруппировать без доп. запросов — сначала `super_admin` (сортировка по `username`), затем пользователи по командам (`team_name ASC`, `team_id ASC` для стабильности); внутри команды — лидер первым (`is_leader DESC`), затем участники по `username ASC`. Порядок — контракт (QA проверяет), т.к. группировка на `/admin` строится из него (см. §7).
 
 ### `POST /api/admin/users`
 - **Тело (JSON):** `{"username": str, "display_name": str|null, "team_id": int}`. **`team_id` обязателен** — создаваемый пользователь получает роль `group_member`/`group_leader`, для которой CHECK `users_role_team_invariant` требует `team_id IS NOT NULL` ([04-data-model.md](./04-data-model.md)). Создать пользователя «без команды» нельзя (роль `super_admin` не создаётся через этот endpoint — он seed-only).
@@ -126,6 +148,27 @@
 
 ---
 
+## 4a. Admin — номера (unassigned-пул и распределение)
+
+Источник — [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md). Все — `require_admin` (только super_admin). Распределение произвольной команды — привилегия админа; участник управляет только своей командой через §6.
+
+### `GET /api/admin/numbers`
+- **Guard:** `require_admin`.
+- **Query:** `?assignment=assigned|unassigned|all` (по умолчанию `all`); `?team_id=<id>` (фильтр по конкретной команде).
+- **Логика:** список **всех** номеров. `unassigned` → `team_id IS NULL`; `assigned` → `team_id IS NOT NULL`; `team_id=<id>` → номера этой команды.
+- **Конфликт фильтров:** `team_id=<id>` вместе с `assignment=unassigned` логически несовместимы (конкретная команда vs «нет команды») → `400 {"error":"invalid_query"}`. Комбинация `team_id=<id>` + `assignment=assigned` (или `all`) допустима и эквивалентна фильтру по команде.
+- **Ответ `200`:** `{"numbers": [{"id","phone_number","team_id","team_name","label","is_active","added_by_user_id","created_at"}]}`. Для unassigned — `team_id=null`, `team_name=null`.
+
+### `PATCH /api/admin/numbers/{id}`
+- **Guard:** `require_admin`. **Тело (JSON):** `{"team_id": <int>|null}`.
+- **Логика:** назначение/переназначение/снятие команды у номера. `team_id=<id>` — привязать к существующей команде; `team_id=null` — снять (сделать unassigned). Audit `number_team_assigned` (`{number_id, phone_number, previous_team_id, new_team_id}`).
+- **Ответы:**
+  - `200 {"id","phone_number","team_id","team_name"}` (при `team_id=null` → `team_name=null`);
+  - `404 {"error":"number_not_found"}`;
+  - `404 {"error":"team_not_found"}` (переданный `team_id` не существует).
+
+---
+
 ## 5. Admin — команды
 
 `require_admin` для CRUD команд.
@@ -148,7 +191,7 @@
 - **Ответы:** `200 {"id","leader_user_id"}`; `400 {"error":"user_not_in_team"}` (кандидат не участник команды); `404 {"error":"team_not_found"}` / `404 {"error":"user_not_found"}`.
 
 ### `DELETE /api/admin/teams/{id}`
-- **Логика:** удаление (расформирование) команды. Требует, чтобы команда была **полностью пуста**: `leader_user_id IS NULL` И нет пользователей с `team_id = id`. Иначе `409 {"error":"team_has_members"}`. Каскадом удаляются `phone_numbers` команды. `ON DELETE SET NULL` на `users.team_id` при штатном flow не срабатывает (команда уже пуста) — служит только safety-net; CHECK-инвариант роли↔team не нарушается. Audit `team_delete`.
+- **Логика:** удаление (расформирование) команды. Требует, чтобы команда была **полностью пуста**: `leader_user_id IS NULL` И нет пользователей с `team_id = id`. Иначе `409 {"error":"team_has_members"}`. **Номера команды НЕ удаляются** — через `ON DELETE SET NULL` их `team_id` обнуляется, и они возвращаются в unassigned-пул ([ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md); ранее — каскадное удаление). `ON DELETE SET NULL` на `users.team_id` при штатном flow не срабатывает (команда уже пуста) — служит только safety-net; CHECK-инвариант роли↔team не нарушается. Audit `team_delete` (`details` включает число ставших unassigned номеров).
 - **Ответы:** `200 {"ok": true}`; `409 {"error":"team_has_members"}`; `404`.
 
 ### Порядок расформирования команды (disband)
@@ -173,7 +216,7 @@
 
 ### `GET /api/numbers`
 - **Guard:** `require_authenticated`.
-- **Логика:** super_admin видит все номера (опц. фильтр `?team_id=`); участник — только номера своей команды (`VisibilityScope.team_id`).
+- **Логика:** super_admin видит все номера (опц. фильтр `?team_id=`; может включать unassigned с `team_name=null`); участник — только номера своей команды (`VisibilityScope.team_id`). Для управления unassigned-пулом/распределения админ использует §4a (`GET/PATCH /api/admin/numbers`); данный endpoint остаётся общим просмотром.
 - **Ответ `200`:** `{"numbers": [{"id","phone_number","team_id","team_name","label","is_active","added_by_user_id","created_at"}]}`.
 
 ### `POST /api/numbers`
@@ -209,7 +252,14 @@
 - **Ответ:** `200` (SSR HTML) для member/leader; `302 → /admin` для super_admin; `302 → /login` при отсутствии сессии (через `NotAuthenticatedError handler`).
 
 ### `GET /admin`
-- **Guard:** `require_admin`. Jinja2-страница: список пользователей, форма создания, кнопки reset/delete, назначение команды. Использует `admin_users.js` + `csrf.js`.
+- **Guard:** `require_admin`. Jinja2-страница: сгруппированный список пользователей, форма создания, кнопки reset/delete, назначение команды, **секция распределения unassigned-номеров**. Использует `admin_users.js` + `csrf.js`.
+- **SSR-контекст (нормативно, группировка — референс `mail-agregator/backend/app/templates/admin/users.html`):** сервер **предгруппирует** данные в Python (не только сортирует), инжектирует:
+  - `super_admins: list` — сначала (обычно один); поля `{id, username, display_name, role, created_at, last_login_at, has_telegram_link}`. Секция «Администраторы» рендерится **первой**.
+  - `team_sections: list` — секции по командам, отсортированные `team_name ASC` (стабильно по `team_id`). Каждая: `{team_id, team_name, leader_user_id, members: list}`. `members` — сначала лидер (`is_leader=true`), затем участники по `username ASC`. Поля участника: `{id, username, display_name, role, is_leader, has_telegram_link, password_reset_required, created_at, last_login_at}`. Пометка лидера — явная (`is_leader`/бейдж).
+  - `teams: list[{id, name}]` — все команды (для select при создании/перемещении); может быть пустым.
+  - `csrf_token`, `is_super_admin: true`.
+  - Данные согласованы с `GET /api/admin/users` (§4, те же поля + порядок); группировка — представление того же набора. Отдельного grouping-API не вводится — SSR-инжект.
+- **Секция unassigned-номеров ([ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)):** сервер инжектирует `unassigned_numbers: list[{id, phone_number, label, is_active, created_at}]` (номера с `team_id IS NULL`) и `teams` (для выбора команды). На каждый номер — контрол назначения команды (select команды + submit), мутация через `PATCH /api/admin/numbers/{id}` `{team_id}` (§4a, CSRF double-submit, `_method=PATCH` для no-JS). Каноничный источник данных — `GET /api/admin/numbers?assignment=unassigned`; SSR-инжект — первичный рендер.
 
 ### `GET /admin/teams`
 - **Guard:** `require_admin`. Jinja2-страница: список команд, создание/переименование/удаление, состав и лидер.
@@ -237,7 +287,9 @@
 | `/set-password` | GET/POST | setup-сессия (`sms_setup`) | POST: да (есть `sms_setup`+CSRF) |
 | `/logout` | POST | authenticated | да |
 | `/api/telegram/auth` | POST | публичный (HMAC) | exempt |
+| `/api/telegram/webhook` | POST | публичный (секрет-токен `X-Telegram-Bot-Api-Secret-Token`) | exempt |
 | `/api/admin/users*` | GET/POST/PATCH/DELETE | `require_admin` | да |
+| `/api/admin/numbers*` | GET/PATCH | `require_admin` | да |
 | `/api/admin/teams*` | GET/POST/PATCH/DELETE | `require_admin` | да |
 | `/api/admin/teams/{id}/leader` | PATCH | `require_admin` | да |
 | `/api/numbers*` | GET/POST/DELETE | `require_authenticated` | да |
@@ -252,6 +304,7 @@
 | --- | --- | --- | --- |
 | `invalid_twilio_signature` | 401 | webhook | Неверная подпись Twilio. |
 | `invalid_init_data` / `init_data_expired` | 401 | `/api/telegram/auth` | Плохой HMAC / протух `auth_date`. |
+| `invalid_webhook_secret` | 403 | `/api/telegram/webhook` | Неверный/отсутствует `X-Telegram-Bot-Api-Secret-Token`. |
 | `invalid_credentials` | 200/re-render | `/login/password` | Неверный логин/пароль (без различения). |
 | `account_locked` | 423 | `/login/password` | Lockout до `lockout_until`. |
 | `team_required` | 400 | `POST/PATCH /api/admin/users`, `POST /api/numbers` | Для member/leader обязателен `team_id`; super_admin обязан указать команду для номера. |
@@ -264,3 +317,6 @@
 | `user_not_in_team` | 400 | `PATCH /api/admin/teams/{id}/leader` | Кандидат в лидеры — не участник команды. |
 | `phone_number_taken` | 409 | `POST /api/numbers` | Номер уже привязан. |
 | `forbidden` | 403 | `/api/numbers*` | Участник обращается к чужой команде. |
+| `invalid_query` | 400 | `GET /api/admin/numbers` | Несовместимые фильтры (`team_id` + `assignment=unassigned`). |
+| `number_not_found` | 404 | `PATCH /api/admin/numbers/{id}` | Номер не найден. |
+| `team_not_found` | 404 | `PATCH /api/admin/numbers/{id}`, `PATCH/POST /api/admin/users` | Переданный `team_id` не существует. |

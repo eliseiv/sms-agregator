@@ -18,6 +18,7 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from app.api.deps import CurrentScope, CurrentSession, CurrentUser, DbSession
+from app.api.serializers import serialize_number
 from app.api.templates import render
 from app.infrastructure.repositories import (
     PhoneNumberRepository,
@@ -40,19 +41,6 @@ async def root_dispatch(request: Request) -> Response:
     if sess.is_super_admin:
         return RedirectResponse(url="/admin", status_code=status.HTTP_302_FOUND)
     return RedirectResponse(url="/app", status_code=status.HTTP_302_FOUND)
-
-
-def _serialize_number(number: Any, team_name: str | None) -> dict[str, Any]:
-    return {
-        "id": number.id,
-        "phone_number": number.phone_number,
-        "team_id": number.team_id,
-        "team_name": team_name,
-        "label": number.label,
-        "is_active": number.is_active,
-        "added_by_user_id": number.added_by_user_id,
-        "created_at": number.created_at.isoformat(),
-    }
 
 
 @router.get("/app", response_class=HTMLResponse)
@@ -85,6 +73,6 @@ async def app_landing(
         "team_id": team_id,
         "team_name": team_name,
         "has_telegram_link": has_telegram_link,
-        "numbers": [_serialize_number(n, team_name) for n in numbers],
+        "numbers": [serialize_number(n, team_name) for n in numbers],
     }
     return await render(request, "app.html", context)

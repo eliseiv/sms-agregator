@@ -516,6 +516,48 @@ a:hover { color: var(--color-primary-hover); text-decoration: underline; }
 .team-chip--home { background: var(--color-primary-soft); border-color: var(--color-primary); color: var(--color-primary); }
 .team-chip__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Сгруппированные секции (Администраторы / команды / номера, docs §7) */
+.admin__group { margin-bottom: var(--space-7); }
+.admin__group-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  flex-wrap: wrap;
+}
+.admin__group-title { margin: 0; font-size: var(--font-size-lg); }
+.admin__group-count {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+}
+.admin__empty--inline {
+  padding: var(--space-5);
+  text-align: left;
+  align-items: flex-start;
+}
+.admin-user__badge--warn {
+  background: var(--color-warning-soft, var(--color-bg-subtle));
+  color: var(--color-warning, var(--color-text-muted));
+  border-color: var(--color-warning, var(--color-border-strong));
+  margin-left: var(--space-2);
+}
+.admin-users-table__tg { white-space: nowrap; }
+
+/* Компактный select для inline-контролов (фильтр номеров, назначение команды) */
+.field__input--compact { width: auto; min-width: 12rem; padding: var(--space-2) var(--space-3); }
+
+/* Секция распределения номеров (docs §4a, §7) */
+.admin-numbers__filter { display: inline-flex; align-items: center; gap: var(--space-2); margin-left: auto; }
+.admin-numbers__filter-label { color: var(--color-text-muted); font-size: var(--font-size-sm); }
+.number-card__assign { flex-wrap: wrap; gap: var(--space-2); }
+
+@media (max-width: 640px) {
+  .field__input--compact { width: 100%; min-width: 0; }
+  .admin-numbers__filter { margin-left: 0; width: 100%; }
+  .number-card__assign { width: 100%; }
+}
+
 /* ---------- 8a. Landing участника/лидера (/app) -------------------------- */
 .landing__header { margin-bottom: var(--space-6); }
 .landing__title { margin: 0 0 var(--space-2); font-size: var(--font-size-xl); }

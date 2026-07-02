@@ -24,10 +24,11 @@ class PhoneNumber(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     phone_number: Mapped[str] = mapped_column(Text, nullable=False)
-    team_id: Mapped[int] = mapped_column(
+    # team_id NULLABLE, ON DELETE SET NULL (ADR-0009): NULL == unassigned (пул).
+    team_id: Mapped[int | None] = mapped_column(
         BigInteger,
-        ForeignKey("teams.id", ondelete="CASCADE", name="fk_phone_numbers_team_id"),
-        nullable=False,
+        ForeignKey("teams.id", ondelete="SET NULL", name="fk_phone_numbers_team_id"),
+        nullable=True,
     )
     added_by_user_id: Mapped[int | None] = mapped_column(
         BigInteger,

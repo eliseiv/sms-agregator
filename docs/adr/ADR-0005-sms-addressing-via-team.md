@@ -5,6 +5,7 @@
 | Статус | accepted |
 | Дата | 2026-07-01 |
 | Связано | ADR-0003, ADR-0004; [03-architecture.md](../03-architecture.md), [04-data-model.md](../04-data-model.md), [05-api-contracts.md](../05-api-contracts.md) §1,§6 |
+| Амендмент | Изменён [ADR-0009](./ADR-0009-unassigned-numbers-admin-allocation.md): **(а)** §Decision 1 (`phone_numbers.team_id NOT NULL ... ON DELETE CASCADE`) — `team_id` теперь NULLABLE, FK `ON DELETE SET NULL` (unassigned-номера); **(б)** следствие в §Consequences/«Минусы» «удаление команды каскадит удаление `phone_numbers`» **более не действует** — удаление команды переводит её номера в unassigned (`team_id → NULL` через `ON DELETE SET NULL`), номера НЕ удаляются. Прочие пункты (получатели, неизвестный номер, идемпотентность, dead-links, удаление long polling, «любой участник добавляет номер») — в силе. |
 
 ## Context
 
