@@ -13,12 +13,13 @@ import asyncpg
 import pytest
 
 from scripts.import_numbers import import_numbers
+from tests.conftest import sibling_dsn, sibling_sa_url
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 _ROOT = Path(__file__).resolve().parents[2]
-_DATA_DB_SA = "postgresql+asyncpg://sms:sms@localhost:63812/smsdata"
-_DATA_DB_DSN = "postgresql://sms:sms@localhost:63812/smsdata"
+_DATA_DB_SA = sibling_sa_url("smsdata")
+_DATA_DB_DSN = sibling_dsn("smsdata")
 
 
 def _build_sqlite(path: str) -> None:

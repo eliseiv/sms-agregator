@@ -19,10 +19,32 @@ from urllib.parse import urlencode
 # --- ENV: выставить ДО импорта shared.config (get_settings кэшируется) --------
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-TEST_DB_HOST_PORT = "63812"
-TEST_DATABASE_URL = f"postgresql+asyncpg://sms:sms@localhost:{TEST_DB_HOST_PORT}/sms"
-TEST_REDIS_URL = "redis://localhost:63811/0"
+# Подключение к Postgres/Redis берётся из окружения. Fallback по умолчанию
+# СОВПАДАЕТ с service-портами в .github/workflows/ci.yml (postgres 55620, redis
+# 63811), поэтому CI-раннер проходит без доп. env. Локально (если порт занят)
+# переопредели: TEST_DATABASE_URL / TEST_REDIS_URL. Никаких захардкоженных
+# портов в коде — только дефолт, равный CI.
+TEST_DATABASE_URL = os.environ.get(
+    "TEST_DATABASE_URL", "postgresql+asyncpg://sms:sms@localhost:55620/sms"
+)
+TEST_REDIS_URL = os.environ.get("TEST_REDIS_URL", "redis://localhost:63811/0")
 TEST_BOT_TOKEN = "123456:AAExampleTestBotTokenForHMACVerification"
+
+
+def sibling_sa_url(db_name: str) -> str:
+    """SQLAlchemy-URL для соседней БД (smsmig/smsdata) на том же хосте/порту."""
+    base, _ = TEST_DATABASE_URL.rsplit("/", 1)
+    return f"{base}/{db_name}"
+
+
+def sibling_dsn(db_name: str) -> str:
+    """asyncpg-DSN для соседней БД (без +asyncpg-диалекта)."""
+    return (
+        sibling_sa_url(db_name)
+        .replace("postgresql+asyncpg://", "postgresql://")
+        .replace("postgresql+psycopg://", "postgresql://")
+    )
+
 
 os.environ.update(
     {

@@ -12,10 +12,12 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import sibling_sa_url
+
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 _ROOT = Path(__file__).resolve().parents[2]
-_MIG_DB = "postgresql+asyncpg://sms:sms@localhost:63812/smsmig"
+_MIG_DB = sibling_sa_url("smsmig")
 
 
 def _alembic(*args: str, database_url: str) -> subprocess.CompletedProcess[str]:
