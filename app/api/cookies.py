@@ -17,6 +17,7 @@ CSRF_COOKIE = "sms_csrf"
 SETUP_COOKIE = "sms_setup"
 LOGIN_COOKIE = "sms_login"
 TG_PENDING_COOKIE = "sms_tg_pending"
+LOGGED_OUT_COOKIE = "sms_logged_out"
 
 LOGIN_COOKIE_MAX_AGE = 15 * 60
 
@@ -124,3 +125,27 @@ def read_tg_pending_cookie(request: Request) -> str | None:
         return None
     cleaned = raw.strip()
     return cleaned or None
+
+
+def set_logged_out_cookie(response: Response, settings: Settings) -> None:
+    """Маркер «залипающего» выхода (ADR-0011): НЕ HttpOnly (читается ``tg.js``)."""
+    response.set_cookie(
+        key=LOGGED_OUT_COOKIE,
+        value="1",
+        max_age=settings.LOGOUT_STICKY_TTL_SECONDS,
+        httponly=False,
+        secure=settings.cookie_secure,
+        samesite="lax",
+        path="/",
+        domain=_domain(settings),
+    )
+
+
+def clear_logged_out_cookie(response: Response, settings: Settings) -> None:
+    """Сброс маркера выхода (Max-Age=0) — при установлении новой сессии/self-heal."""
+    response.delete_cookie(key=LOGGED_OUT_COOKIE, path="/", domain=_domain(settings))
+
+
+def read_logged_out_cookie(request: Request) -> bool:
+    """True, если присутствует маркер ``sms_logged_out`` (значение ``1``)."""
+    return request.cookies.get(LOGGED_OUT_COOKIE) == "1"

@@ -35,3 +35,5 @@ Bootstrap-версия документации под крупную дораб
 - Production-деплой за общим edge-nginx соседа (`mas-nginx`/`mas-net`), домен novirell.shop, additive vhost, host certbot (см. [ADR-0007](./adr/ADR-0007-deploy-behind-shared-edge-nginx.md)).
 - Unassigned-номера: `phone_numbers.team_id` NULLABLE (`ON DELETE SET NULL`), админское распределение по командам, импорт легаси-номеров как unassigned (см. [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)).
 - Приём апдейтов бота через webhook (только `/start` → кнопка Mini App), секрет-токен, новый бот-токен (см. [ADR-0010](./adr/ADR-0010-telegram-webhook-and-new-bot.md)).
+- Первый вход по ТЗ: шаг-1 `POST /login` ветвится по состоянию и направляет неактивированный аккаунт сразу на `/set-password` («придумай пароль»); анти-энумерация шага-1 ослаблена до мягкой (амендмент [ADR-0002](./adr/ADR-0002-two-step-login.md), риск TD-010).
+- «Залипающий» logout в Mini App: cookie `sms_logged_out` подавляет авто-SSO до явного входа, привязка/push сохраняются (см. [ADR-0011](./adr/ADR-0011-sticky-logout-vs-miniapp-sso.md), амендит [ADR-0004](./adr/ADR-0004-telegram-mini-app-sso.md) §5).

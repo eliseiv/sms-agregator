@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     SESSION_TTL_SECONDS: int = Field(default=1_209_600, ge=60)
     SESSION_ABSOLUTE_TTL_SECONDS: int = Field(default=2_592_000, ge=60)
     SETUP_SESSION_TTL_SECONDS: int = Field(default=900, ge=60)
+    # Маркер «залипающего» выхода sms_logged_out (ADR-0011): длинный TTL —
+    # safety-net, первичный сброс — явный вход. Дефолт 30 дней.
+    LOGOUT_STICKY_TTL_SECONDS: int = Field(default=2_592_000, ge=60)
     COOKIE_SECURE: bool = True
     COOKIE_DOMAIN: str | None = None
     LOGIN_FAILURE_THRESHOLD: int = Field(default=5, ge=1, le=100)

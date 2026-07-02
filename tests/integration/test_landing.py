@@ -183,13 +183,12 @@ async def test_post_set_password_first_login_lands_200(client):
                 team_id=tid,
                 password_reset_required=True,
             )
+    # Амендмент ADR-0002: шаг-1 для аккаунта без пароля → сразу /set-password.
     r1 = await client.post("/login", data={"username": "spmember"})
     assert r1.status_code == 303
-    r2 = await client.post("/login/password", data={"password": "irrelevant"})
-    assert r2.status_code == 303
-    assert r2.headers["location"] == "/set-password"
+    assert r1.headers["location"] == "/set-password"
     setup_token = re.search(
-        r"sms_setup=([^;]+)", r2.headers.get("set-cookie", "")
+        r"sms_setup=([^;]+)", r1.headers.get("set-cookie", "")
     ).group(1)
     setup = await SetupSessionStore().get(setup_token)
     r3 = await client.post(

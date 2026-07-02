@@ -6,7 +6,12 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError as PydanticValidationError
 
-from app.api.cookies import set_session_cookies, set_tg_pending_cookie
+from app.api.cookies import (
+    clear_logged_out_cookie,
+    read_logged_out_cookie,
+    set_session_cookies,
+    set_tg_pending_cookie,
+)
 from app.api.deps import DbSession
 from app.api.schemas import TelegramAuthRequest, TelegramAuthResponse
 from app.exceptions import ValidationError
@@ -71,6 +76,8 @@ async def telegram_auth(request: Request, db: DbSession) -> Response:
 
     await consume(LIMIT_TG_AUTH_USER, f"tg:{resolved.telegram_user_id}")
 
+    logged_out = read_logged_out_cookie(request)
+
     # Активная сессия → self-heal (без новой сессии/redirect).
     current = getattr(request.state, "session", None)
     if current is not None:
@@ -81,8 +88,23 @@ async def telegram_auth(request: Request, db: DbSession) -> Response:
             ip=ip,
             user_agent=ua,
         )
-        return JSONResponse(
+        response: Response = JSONResponse(
             content=TelegramAuthResponse(linked=False, healed=healed).model_dump(
+                exclude_none=True
+            ),
+            status_code=status.HTTP_200_OK,
+        )
+        # ADR-0011 §3b: сессия новее выхода — очистить stale-маркер.
+        if logged_out:
+            clear_logged_out_cookie(response, settings)
+        return response
+
+    # ADR-0011 §3b: маркер выхода + нет активной сессии → не создавать
+    # сессию/pending (подавление авто-SSO до явного входа).
+    if logged_out:
+        await db.commit()  # закрыть autobegun read-tx
+        return JSONResponse(
+            content=TelegramAuthResponse(linked=False, logged_out=True).model_dump(
                 exclude_none=True
             ),
             status_code=status.HTTP_200_OK,
@@ -106,7 +128,7 @@ async def telegram_auth(request: Request, db: DbSession) -> Response:
             session_token, csrf = await SessionStore().create(
                 user.id, user.role, user.team_id, ip, ua
             )
-            response: Response = JSONResponse(
+            response = JSONResponse(
                 content=TelegramAuthResponse(linked=True, redirect="/").model_dump(
                     exclude_none=True
                 ),

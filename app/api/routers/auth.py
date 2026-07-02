@@ -8,11 +8,13 @@ from pydantic import ValidationError as PydanticValidationError
 
 from app.api.cookies import (
     clear_login_cookie,
+    clear_logged_out_cookie,
     clear_session_cookies,
     clear_setup_cookie,
     clear_tg_pending_cookie,
     read_login_cookie,
     read_tg_pending_cookie,
+    set_logged_out_cookie,
     set_login_cookie,
     set_session_cookies,
     set_setup_cookie,
@@ -83,11 +85,14 @@ async def login_page(request: Request) -> Response:
 
 
 @router.post("/login")
-async def login_username_submit(request: Request) -> Response:
-    """Шаг-1 логина. docs/08-security §6: ВСЕГДА 303 → /login/password + sms_login,
+async def login_username_submit(request: Request, db: DbSession) -> Response:
+    """Шаг-1 логина (амендмент ADR-0002, docs/05 §2, docs/08 §6).
 
-    независимо от существования/состояния аккаунта (анти-энумерация). Логика
-    set-password/сброса пароля разрешается на шаге-2 в ``AuthService.login``.
+    Ветвление по состоянию аккаунта (мягкая анти-энумерация):
+      - без пароля / ``password_reset_required`` → setup-сессия + ``sms_setup``,
+        303 → /set-password («придумайте пароль»);
+      - активный с паролем ИЛИ несуществующий логин → 303 → /login/password
+        (+ ``sms_login``) — существование активного аккаунта не раскрывается.
     """
     settings = get_settings()
     ip = client_ip(request)
@@ -108,7 +113,19 @@ async def login_username_submit(request: Request) -> Response:
     await consume(LIMIT_LOGIN_USERNAME, f"ip:{ip}")
     await consume(LIMIT_LOGIN_USERNAME, f"user:{payload.username}")
 
-    # Единый ответ для любого kind — без обращения к БД, без ветвлений.
+    # Lookup состояния аккаунта (read). Закрываем autobegun read-tx перед возвратом.
+    lookup = await AuthService(db).lookup_for_login(username=payload.username)
+    await db.commit()
+
+    if lookup.kind == "set_password_required":
+        assert lookup.setup_token is not None
+        response: Response = RedirectResponse(
+            url="/set-password", status_code=status.HTTP_303_SEE_OTHER
+        )
+        set_setup_cookie(response, lookup.setup_token, settings)
+        return response
+
+    # ready_for_password | not_found → идентичный ответ (анти-энумерация).
     response = RedirectResponse(
         url="/login/password", status_code=status.HTTP_303_SEE_OTHER
     )
@@ -209,6 +226,7 @@ async def login_password_submit(request: Request, db: DbSession) -> Response:  #
     )
     set_session_cookies(response, result.session_token, result.csrf, settings)
     clear_login_cookie(response, settings)
+    clear_logged_out_cookie(response, settings)  # ADR-0011: сброс маркера при входе
     if result.user_id is not None:
         async with db.begin():
             await _link_tg_if_pending(
@@ -325,6 +343,7 @@ async def set_password_submit(request: Request, db: DbSession) -> Response:  # n
     )
     clear_setup_cookie(response, settings)
     clear_login_cookie(response, settings)
+    clear_logged_out_cookie(response, settings)  # ADR-0011: сброс маркера при входе
     set_session_cookies(response, result.session_token, result.csrf, settings)
     if result.user_id is not None:
         async with db.begin():
@@ -346,6 +365,7 @@ async def logout(request: Request, db: DbSession) -> Response:
         response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
         clear_session_cookies(response, settings)
         clear_login_cookie(response, settings)
+        set_logged_out_cookie(response, settings)  # ADR-0011
         return response
 
     ip = client_ip(request)
@@ -361,4 +381,5 @@ async def logout(request: Request, db: DbSession) -> Response:
     response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
     clear_session_cookies(response, settings)
     clear_login_cookie(response, settings)
+    set_logged_out_cookie(response, settings)  # ADR-0011: подавляет авто-SSO
     return response

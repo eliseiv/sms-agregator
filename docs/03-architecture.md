@@ -202,7 +202,9 @@ sequenceDiagram
     end
 ```
 
-Первый вход пользователя, созданного админом (`password_hash IS NULL`, `password_reset_required=true`): после шага-1 логина он направляется на `/set-password`; после успешной установки пароля так же выполняется `link_pending`, если есть `sms_tg_pending`.
+Первый вход пользователя, созданного админом (`password_hash IS NULL`, `password_reset_required=true`): шаг-1 `POST /login` **сразу** ветвит такой аккаунт на `/set-password` (амендмент [ADR-0002](./adr/ADR-0002-two-step-login.md): ветвление по состоянию, «придумай пароль» вместо «введи пароль»); после успешной установки пароля так же выполняется `link_pending`, если есть `sms_tg_pending`. Активный аккаунт с паролем и несуществующий логин идут на `/login/password` (мягкая анти-энумерация, [08-security.md](./08-security.md) §6).
+
+**«Залипающий» logout ([ADR-0011](./adr/ADR-0011-sticky-logout-vs-miniapp-sso.md)).** `POST /logout` ставит cookie `sms_logged_out`. При его наличии `tg.js` **не** делает авто-POST в `/api/telegram/auth`, а сам endpoint при маркере и отсутствии сессии возвращает `200 {linked:false, logged_out:true}` без создания сессии — пользователь остаётся на `/login`. Так осознанный выход не перебивается авто-SSO живой привязки (привязка/push при этом сохраняются, ADR-0004). Повторный вход — кнопкой «Войти» (сброс маркера + инициация SSO/логина).
 
 Полные контракты endpoints — [05-api-contracts.md](./05-api-contracts.md). Детали безопасности — [08-security.md](./08-security.md).
 

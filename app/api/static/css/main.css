@@ -399,6 +399,22 @@ a:hover { color: var(--color-primary-hover); text-decoration: underline; }
 .auth-card__intro { color: var(--color-text-muted); margin: 0 0 var(--space-5); }
 .auth-card__hint  { color: var(--color-text-muted); margin: var(--space-5) 0 0; font-size: var(--font-size-sm); }
 
+/* Блок «Вы вышли из системы» на /login (ADR-0011). Скрыт по умолчанию через
+   HTML-атрибут hidden; раскрывается tg.js. `[hidden]` глобально не переопределён,
+   но фиксируем display:none явно на случай конфликта со специфичными правилами. */
+.auth-notice[hidden] { display: none; }
+.auth-notice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  margin: 0 0 var(--space-5);
+  background: var(--color-bg-muted, var(--color-bg));
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, var(--radius-lg));
+}
+.auth-notice__text { margin: 0; color: var(--color-text-muted); }
+
 /* ---------- 8. Admin ----------------------------------------------------- */
 .admin__toolbar {
   display: flex;

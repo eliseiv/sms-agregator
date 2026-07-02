@@ -4,7 +4,7 @@
 
 ## Соглашения
 
-- **Cookies:** `sms_session` (сессия, HttpOnly), `sms_csrf` (double-submit, читается JS), `sms_setup` (setup-сессия при первом входе), `sms_login` (промежуточная сессия шага-1 логина), `sms_tg_pending` (pending-токен Mini App SSO, HttpOnly, короткоживущий).
+- **Cookies:** `sms_session` (сессия, HttpOnly), `sms_csrf` (double-submit, читается JS), `sms_setup` (setup-сессия при первом входе), `sms_login` (промежуточная сессия шага-1 логина), `sms_tg_pending` (pending-токен Mini App SSO, HttpOnly, короткоживущий), `sms_logged_out` (маркер «залипающего» выхода, **не HttpOnly** — читается `tg.js`; подавляет авто-SSO до явного входа, [ADR-0011](./adr/ADR-0011-sticky-logout-vs-miniapp-sso.md)).
 - **CSRF:** double-submit применяется к небезопасным методам (`POST/DELETE/PATCH`) **только когда у запроса уже есть cookie с CSRF-токеном** (`sms_csrf` при аутентифицированной `sms_session`, или `sms_setup`+CSRF на `/set-password`). Проверяется совпадение заголовка/поля `csrf_token` с cookie. **Exempt** (double-submit невозможен или не нужен): `POST /api/webhooks/twilio/sms` (подпись Twilio), `POST /api/telegram/auth` (HMAC initData), `POST /api/telegram/webhook` (секрет-токен `X-Telegram-Bot-Api-Secret-Token`, [ADR-0010](./adr/ADR-0010-telegram-webhook-and-new-bot.md)), а также **`POST /login` и `POST /login/password`** — на этих шагах сессии и cookie `sms_csrf` ещё нет, поэтому CSRF-токен физически невозможен; их защищает rate-limit (`LIMIT_LOGIN` per IP / `LIMIT_LOGIN_USERNAME` per username, см. [08-security.md](./08-security.md) §4). Как только устанавливается setup-сессия (`/set-password`) или полноценная сессия (admin/numbers/logout) — CSRF обязателен.
 - **Ошибки API (`/api/*`):** JSON `{"error": "<code>", "detail": "<человекочит.>"}` + соответствующий HTTP-код. Ошибки SSR-страниц (`/login`, `/admin`) — редирект/ре-рендер с флеш-сообщением.
 - **Guards (`app/api/deps.py`):**
@@ -32,18 +32,22 @@
 
 ## 2. Auth (двухэтапный логин, SSR)
 
-Источник — [ADR-0002](./adr/ADR-0002-two-step-login.md). Анти-энумерация: несуществующий логин отвечает так же, как существующий (`ready_for_password`).
+Источник — [ADR-0002](./adr/ADR-0002-two-step-login.md) + его **амендмент** (2026-07-02: ветвление шага-1 по состоянию аккаунта). Мягкая анти-энумерация: несуществующий логин отвечает так же, как **активный** аккаунт с паролем (`303 → /login/password`); различимо только состояние первичной активации (`password_reset_required` → `/set-password`) — принятый риск [TD-010](./100-known-tech-debt.md).
 
 > **Пост-логин редирект.** Все `303 → /` ниже ведут на корневой диспетчер `GET /` (§7), который редиректит на landing по роли (`/admin` для super_admin, `/app` для участников). `/` — реальный зарегистрированный маршрут; `SAFE_REDIRECT_AFTER_LOGIN` и цели пост-set-password/SSO указывают на существующую и достижимую роли страницу ([ADR-0008](./adr/ADR-0008-root-route-and-per-role-landing.md)).
 
 ### `GET /login`
 - SSR-форма шага-1 (ввод логина). Если Mini App прислал `sms_tg_pending` — cookie уже установлен `POST /api/telegram/auth`.
+- **Маркер выхода ([ADR-0011](./adr/ADR-0011-sticky-logout-vs-miniapp-sso.md)):** если присутствует cookie `sms_logged_out`, `tg.js` **не** выполняет авто-SSO (не POSTит initData). Страница показывает сообщение «Вы вышли из системы» и кнопку **«Войти»**: по клику `tg.js` удаляет cookie `sms_logged_out` и инициирует вход — в Mini App POSTит `init_data` в `/api/telegram/auth` (нормальное ветвление [ADR-0004](./adr/ADR-0004-telegram-mini-app-sso.md)), в браузере — переход к форме шага-1. Без маркера — авто-SSO как раньше.
 
 ### `POST /login` (шаг 1 — логин)
 - **CSRF:** exempt (сессии/`sms_csrf` ещё нет; защита — rate-limit).
 - **Тело (form):** `username`.
-- **Логика:** нормализует username (lower), `lookup_for_login`. Устанавливает `sms_login` (промежуточную сессию с username). Ответ единый для существующего и несуществующего логина.
-- **Ответы:** `303 → /login/password` (+ Set-Cookie `sms_login`). При превышении rate-limit — `429`.
+- **Логика (амендмент [ADR-0002](./adr/ADR-0002-two-step-login.md)):** нормализует username (lower), `lookup_for_login`, **ветвление по состоянию аккаунта**:
+  - `password_hash IS NULL` **или** `password_reset_required=true` → создать setup-сессию + `Set-Cookie sms_setup` (+ парный CSRF), `303 → /set-password` («придумайте пароль» — ТЗ-флоу первого входа);
+  - активный аккаунт с паролем → `303 → /login/password` (+ Set-Cookie `sms_login`);
+  - логин **не существует** → `303 → /login/password` (+ Set-Cookie `sms_login`) — мягкая анти-энумерация (неотличимо от активного аккаунта; шаг-2 даст `invalid_credentials` через dummy-hash).
+- **Ответы:** `303 → /set-password` (Set-Cookie `sms_setup`) **или** `303 → /login/password` (Set-Cookie `sms_login`) — по состоянию. При превышении rate-limit — `429`.
 
 ### `GET /login/password`
 - SSR-форма шага-2 (ввод пароля). Требует `sms_login`; иначе `302 → /login`.
@@ -51,9 +55,9 @@
 ### `POST /login/password` (шаг 2 — пароль)
 - **CSRF:** exempt (при `sms_login` ещё нет `sms_csrf`; защита — rate-limit).
 - **Тело (form):** `password`.
-- **Логика:** `login()` — argon2 verify с анти-timing dummy-hash для несуществующего/без пароля; учёт `failed_login_attempts`/`lockout_until`; `needs_rehash` → перехеширование. При `password_reset_required=true` или `password_hash IS NULL` → направление на `/set-password`. При успехе — создание сессии `sms_session`/`sms_csrf`, `link_pending` если есть `sms_tg_pending`.
+- **Логика:** `login()` — argon2 verify с анти-timing dummy-hash для несуществующего/без пароля; учёт `failed_login_attempts`/`lockout_until`; `needs_rehash` → перехеширование. При `password_reset_required=true` или `password_hash IS NULL` → направление на `/set-password` (**fallback** — основной путь такого аккаунта теперь через шаг-1, см. `POST /login`; ветка сохраняется как страховка, [ADR-0002](./adr/ADR-0002-two-step-login.md) амендмент). При успехе — создание сессии `sms_session`/`sms_csrf`, `link_pending` если есть `sms_tg_pending`.
 - **Ответы:**
-  - `303 → /` — успех (Set-Cookie `sms_session`, `sms_csrf`; clear `sms_login`).
+  - `303 → /` — успех (Set-Cookie `sms_session`, `sms_csrf`; clear `sms_login`; при наличии — clear `sms_logged_out` через `Max-Age=0`, [ADR-0011](./adr/ADR-0011-sticky-logout-vs-miniapp-sso.md)).
   - `303 → /set-password` — требуется установка пароля (Set-Cookie `sms_setup`).
   - `200`/re-render с ошибкой — неверный пароль (`invalid_credentials`).
   - `423` (или re-render) — аккаунт заблокирован (`account_locked`), до `lockout_until`.
@@ -66,12 +70,12 @@
 - **CSRF:** да — на этом шаге установлена setup-сессия `sms_setup` и парный CSRF-cookie, double-submit применяется.
 - **Тело (form):** `password`, `password_confirm`, `csrf_token`.
 - **Логика:** `complete_set_password` — валидация политики пароля (см. [08-security.md](./08-security.md)), argon2 hash, `password_reset_required=false`. Создание сессии; `link_pending` если есть `sms_tg_pending`.
-- **Ответы:** `303 → /` (Set-Cookie `sms_session`,`sms_csrf`; clear `sms_setup`); `200`/re-render при слабом/несовпадающем пароле (`weak_password`/`password_mismatch`); `429` — rate-limit.
+- **Ответы:** `303 → /` (Set-Cookie `sms_session`,`sms_csrf`; clear `sms_setup`; при наличии — clear `sms_logged_out` через `Max-Age=0`); `200`/re-render при слабом/несовпадающем пароле (`weak_password`/`password_mismatch`); `429` — rate-limit.
 
 ### `POST /logout`
 - **Тело (form):** `csrf_token`.
-- **Логика:** revoke `sms_session` (Redis), clear cookies. **`telegram_links` НЕ трогаются** (push переживает logout — см. [ADR-0004](./adr/ADR-0004-telegram-mini-app-sso.md)). Для `super_admin` — audit `admin_logout`.
-- **Ответы:** `302 → /login`.
+- **Логика:** revoke `sms_session` (Redis), clear cookies (`sms_session`/`sms_csrf`). **`telegram_links` НЕ трогаются** (push переживает logout — см. [ADR-0004](./adr/ADR-0004-telegram-mini-app-sso.md)). **Ставит маркер «залипающего» выхода** `Set-Cookie sms_logged_out=1` (не HttpOnly, `Secure` при `COOKIE_SECURE`, `SameSite=Lax`, `Path=/`, TTL `LOGOUT_STICKY_TTL_SECONDS`) — подавляет авто-SSO до явного входа ([ADR-0011](./adr/ADR-0011-sticky-logout-vs-miniapp-sso.md)). Для `super_admin` — audit `admin_logout`.
+- **Ответы:** `302 → /login` (+ Set-Cookie `sms_logged_out`).
 
 ---
 
@@ -81,8 +85,8 @@
 - **Доступ:** публичный. **CSRF:** exempt (защита — HMAC initData). Источник — [ADR-0004](./adr/ADR-0004-telegram-mini-app-sso.md).
 - **Content-Type:** `application/json`. **Тело:** `{"init_data": "<raw initData>"}`.
 - **Rate-limit:** `TG_AUTH` per IP до HMAC; per `telegram_user_id` после HMAC (см. [08-security.md](./08-security.md)).
-- **Логика:** `verify_init_data` (HMAC-SHA256 + `auth_date` TTL). Ветвление:
-  - **есть активная `sms_session`** → `self_heal_link` (idempotent upsert привязки к текущему user; NO-OP для живой привязки того же user) → `200 {"linked": false, "healed": true}` (без redirect, без cookie).
+- **Логика:** `verify_init_data` (HMAC-SHA256 + `auth_date` TTL) — до ветвления. Затем **проверка маркера выхода** ([ADR-0011](./adr/ADR-0011-sticky-logout-vs-miniapp-sso.md)): если есть cookie `sms_logged_out` **и нет** активной `sms_session` → **не создавать сессию/pending** → `200 {"linked": false, "logged_out": true}` (без Set-Cookie `sms_session`/`sms_tg_pending`). Иначе ветвление:
+  - **есть активная `sms_session`** → `self_heal_link` (idempotent upsert привязки к текущему user; NO-OP для живой привязки того же user) → `200 {"linked": false, "healed": true}` (без redirect, без сессионной cookie). Если при этом присутствует stale-`sms_logged_out` — очистить его (`Set-Cookie sms_logged_out=; Max-Age=0`).
   - **нет сессии, привязка существует** (`telegram_links` с `dead_at IS NULL`) → создать сессию → `200 {"linked": true, "redirect": "/"}` + Set-Cookie `sms_session`,`sms_csrf`. Фронт переходит на `/`, который диспетчеризует на landing по роли (§7, [ADR-0008](./adr/ADR-0008-root-route-and-per-role-landing.md)).
   - **нет сессии, привязки нет** → `create_pending` (Redis) → `200 {"linked": false}` + Set-Cookie `sms_tg_pending`.
 - **Ответы ошибок:** `401 {"error":"invalid_init_data"}` (плохой HMAC) / `{"error":"init_data_expired"}` (протух `auth_date`); `429` — rate-limit; при внутренней ошибке self-heal — `200 {"linked": false, "healed": false}` (best-effort, фронт не перезагружается).

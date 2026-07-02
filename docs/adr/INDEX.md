@@ -14,6 +14,7 @@
 | [ADR-0008](./ADR-0008-root-route-and-per-role-landing.md) | Корневой маршрут `/` и per-role landing (`/` диспетчер, `/app` для участников) | accepted | 2026-07-02 |
 | [ADR-0009](./ADR-0009-unassigned-numbers-admin-allocation.md) | Unassigned-номера и админское распределение по командам (амендит ADR-0005 §1) | accepted | 2026-07-02 |
 | [ADR-0010](./ADR-0010-telegram-webhook-and-new-bot.md) | Telegram webhook (`/start`) и новый бот (setWebhook/setMyCommands, TELEGRAM_WEBHOOK_SECRET) | accepted | 2026-07-02 |
+| [ADR-0011](./ADR-0011-sticky-logout-vs-miniapp-sso.md) | «Залипающий» logout против авто-SSO Mini App (cookie `sms_logged_out`, амендит ADR-0004 §5) | accepted | 2026-07-02 |
 
 ## Как добавлять ADR
 

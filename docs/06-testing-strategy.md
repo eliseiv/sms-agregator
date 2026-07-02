@@ -37,13 +37,14 @@
 
 ### Auth
 10. `seed_admin`: первый старт → лог `created`; рестарт с тем же env → `unchanged` (идемпотентность).
-11. Двухэтапный логин: `POST /login` → `303 /login/password`; `POST /login/password` (верный пароль) → `303 /`.
+11. Двухэтапный логин (амендмент [ADR-0002](./adr/ADR-0002-two-step-login.md)): `POST /login` для активного аккаунта с паролем → `303 /login/password` (+`sms_login`); `POST /login/password` (верный пароль) → `303 /` (+`sms_session`/`sms_csrf`; при наличии — clear `sms_logged_out`).
 11a. **Корневой маршрут и per-role landing (ADR-0008).** `GET /` без сессии → `302 /login`; с сессией `super_admin` → `302 /admin`; с сессией `group_leader`/`group_member` → `302 /app`. Затем **у каждой роли landing отдаёт `200`**: `GET /admin` (super_admin) → `200`; `GET /app` (leader/member) → `200` и содержит номера своей команды + статус Telegram-привязки + форму добавления номера + logout. `GET /app` для `super_admin` → `302 /admin`. Инвариант: после успешного логина ни одна роль не получает `404`.
-12. Создание пользователя админом → `password_hash IS NULL`, `password_reset_required=true`; первый вход → редирект на `/set-password`; после `POST /set-password` → `303 /`, `password_reset_required=false`.
+12. Создание пользователя админом → `password_hash IS NULL`, `password_reset_required=true`; первый вход: **шаг-1 `POST /login` сразу → `303 /set-password`** (+`sms_setup`, «придумай пароль», амендмент [ADR-0002](./adr/ADR-0002-two-step-login.md)) — форма ввода пароля НЕ показывается; после `POST /set-password` → `303 /`, `password_reset_required=false`. Fallback: если такой аккаунт попал на `POST /login/password`, шаг-2 тоже перенаправляет на `/set-password`.
 13. `reset` → revoke сессий + всех `telegram_links`; `delete` — каскад; попытка удалить лидера непустой команды → `409`.
-14. Анти-энумерация: `POST /login` для несуществующего и существующего логина → одинаковый ответ/тайминг.
+14. Мягкая анти-энумерация ([08](./08-security.md) §6): `POST /login` для **несуществующего** логина → `303 /login/password` (идентично **активному** аккаунту с паролем, одинаковый тайминг); шаг-2 → `invalid_credentials`. Аккаунт в состоянии `password_reset_required` различим (→ `/set-password`) — принятый риск TD-010.
 15. Guards: `group_member` → `POST /api/admin/users` = `403`; `POST /api/numbers` в свою команду = `201`.
 16. Lockout: N неверных паролей (`LOGIN_FAILURE_THRESHOLD`) → `lockout_until` установлен, следующий вход отклонён до истечения.
+16a. **«Залипающий» logout ([ADR-0011](./adr/ADR-0011-sticky-logout-vs-miniapp-sso.md)).** `POST /logout` → `302 /login` + `Set-Cookie sms_logged_out`. При наличии `sms_logged_out` и живой привязке `POST /api/telegram/auth` (без сессии) → `200 {linked:false, logged_out:true}` **без** `sms_session` (пользователь остаётся разлогинен, `telegram_links` не тронуты). После явного входа (маркер сброшен) тот же вызов при живой привязке → `200 {linked:true, redirect:"/"}` + `sms_session`. При активной сессии stale-`sms_logged_out` очищается.
 
 ### Mini App SSO
 17. Валидный `initData`, без сессии, без привязки → `200 {linked:false}` + `sms_tg_pending`; после `POST /login/password` — `telegram_links` создан.

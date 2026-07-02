@@ -78,6 +78,7 @@ flowchart LR
 | `SESSION_TTL_SECONDS` | `1209600` | TTL скользящей сессии. |
 | `SESSION_ABSOLUTE_TTL_SECONDS` | `2592000` | Абсолютный потолок жизни сессии. |
 | `SETUP_SESSION_TTL_SECONDS` | `900` | TTL setup-сессии (`/set-password`). |
+| `LOGOUT_STICKY_TTL_SECONDS` | `2592000` | TTL cookie-маркера `sms_logged_out` (safety-net; первичный сброс — явный вход). [ADR-0011](./adr/ADR-0011-sticky-logout-vs-miniapp-sso.md). |
 | `COOKIE_SECURE` | `true` (prod) / `false` (локально) | `Secure` на cookies. В prod — `true` (HTTPS через edge). |
 | `LOGIN_FAILURE_THRESHOLD` | `5` | Порог неверных паролей до lockout. |
 | `LOGIN_LOCKOUT_MINUTES` | `15` | Длительность lockout. |

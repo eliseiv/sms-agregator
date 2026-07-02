@@ -39,6 +39,7 @@ class TelegramAuthResponse(BaseModel):
     linked: bool
     redirect: str | None = None
     healed: bool | None = None
+    logged_out: bool | None = None
 
 
 # --- Admin: users -----------------------------------------------------------

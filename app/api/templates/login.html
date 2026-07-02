@@ -12,6 +12,26 @@
     <p class="form-error" role="alert">{{ error_message | e }}</p>
   {% endif %}
 
+  {# «Залипающий» logout (docs/05 §2/§3, docs/08 §2, ADR-0011).
+     Блок скрыт по умолчанию (hidden) и раскрывается tg.js, когда присутствует
+     cookie ``sms_logged_out`` или страница открыта в Telegram Mini App.
+     Кнопка «Войти» — явный повторный вход: tg.js удаляет маркер и инициирует
+     SSO (Mini App) либо ведёт к форме шага-1 (браузер). Логики inline нет —
+     всё в tg.js (CSP-безопасно). #}
+  <div id="sms-logged-out-notice" class="auth-notice" role="status" aria-live="polite" hidden>
+    {# Текст выставляет tg.js по наличию маркера sms_logged_out: «Вы вышли из
+       системы.» для вышедшего, нейтральный «Войти в систему» для нового
+       Mini App-пользователя (маркера нет). textContent — без inline. #}
+    <p id="sms-logged-out-text" class="auth-notice__text"></p>
+    <button
+      type="button"
+      id="sms-login-button"
+      class="btn btn--primary"
+      aria-label="Войти в систему">
+      Войти
+    </button>
+  </div>
+
   {# Шаг-1 двухэтапного логина (docs/05 §2). Только логин — пароль на следующем
      шаге. POST /login CSRF-exempt (сессии/sms_csrf ещё нет). #}
   <form method="POST" action="/login" class="form" autocomplete="on" novalidate>

@@ -4,7 +4,7 @@
 | --- | --- |
 | Статус | accepted |
 | Дата | 2026-07-01 |
-| Связано | ADR-0002, ADR-0005; [05-api-contracts.md](../05-api-contracts.md) §3, [08-security.md](../08-security.md) §5 |
+| Связано | ADR-0002, ADR-0005, ADR-0011 (**амендит** §5 logout/SSO); [05-api-contracts.md](../05-api-contracts.md) §3, [08-security.md](../08-security.md) §5 |
 
 ## Context
 
@@ -55,6 +55,7 @@ NO-OP для живой привязки того же user критичен: о
 
 - Bot API 403 / «bot was blocked» / «chat not found» при доставке → `telegram_links.dead_at = now()` (per-chat) + `deliveries.status='dead'`. Реактивация — при следующем успешном `POST /api/telegram/auth` того же tg-user (upsert обнуляет `dead_at`).
 - **Logout расцеплён с привязкой:** `POST /logout` завершает только веб-сессию; `telegram_links` **не** удаляются (push переживает logout). Отвязка — только явным действием/reset.
+  - **Амендмент (2026-07-02, [ADR-0011](./ADR-0011-sticky-logout-vs-miniapp-sso.md)):** поскольку привязка переживает logout, при следующей загрузке страницы `tg.js` авто-POSTил бы initData в `/api/telegram/auth` и мгновенно перелогинивал пользователя. Чтобы осознанный выход «залипал», `POST /logout` дополнительно ставит cookie-маркер `sms_logged_out`: `tg.js` при его наличии не делает авто-SSO, а `/api/telegram/auth` при маркере и отсутствии сессии не создаёт сессию/pending (`200 {linked:false, logged_out:true}`). `telegram_links` при этом **по-прежнему не трогаются** — push сохраняется; маркер лишь подавляет авто-создание веб-сессии до явного входа. Детали — ADR-0011.
 - **admin reset password** → revoke всех сессий + **всех** `telegram_links` пользователя (`reason="password_reset"`).
 
 ## Rationale
