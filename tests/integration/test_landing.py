@@ -35,7 +35,9 @@ async def test_root_no_session_redirects_login(client):
 async def test_root_super_admin_followed_renders_admin_200(client):
     async with make_session() as s:
         async with s.begin():
-            admin = await seed_user(s, username="ld-root", role="super_admin", team_id=None)
+            admin = await seed_user(
+                s, username="ld-root", role="super_admin", team_id=None
+            )
     await _set_auth(client, admin.id, "super_admin", None)
     # промежуточный редирект
     r_hop = await client.get("/")
@@ -52,9 +54,13 @@ async def test_root_team_role_followed_renders_app_200(client, role):
     async with make_session() as s:
         async with s.begin():
             tid = await seed_team(s, "ld-" + role)
-            lead = await seed_user(s, username=role + "-lead", role="group_leader", team_id=tid)
+            lead = await seed_user(
+                s, username=role + "-lead", role="group_leader", team_id=tid
+            )
             if role == "group_member":
-                u = await seed_user(s, username=role + "-mem", role="group_member", team_id=tid)
+                u = await seed_user(
+                    s, username=role + "-mem", role="group_member", team_id=tid
+                )
             else:
                 u = lead
             await seed_number(s, phone="+441288800010", team_id=tid)
@@ -87,7 +93,9 @@ async def test_app_no_session_redirects_login(client):
 async def test_app_super_admin_redirects_admin_no_404(client):
     async with make_session() as s:
         async with s.begin():
-            admin = await seed_user(s, username="app-root", role="super_admin", team_id=None)
+            admin = await seed_user(
+                s, username="app-root", role="super_admin", team_id=None
+            )
     await _set_auth(client, admin.id, "super_admin", None)
     r = await client.get("/app")
     assert r.status_code == 302
@@ -177,12 +185,12 @@ async def test_post_set_password_first_login_lands_200(client):
             )
     r1 = await client.post("/login", data={"username": "spmember"})
     assert r1.status_code == 303
-    r2 = await client.post(
-        "/login/password", data={"password": "irrelevant"}
-    )
+    r2 = await client.post("/login/password", data={"password": "irrelevant"})
     assert r2.status_code == 303
     assert r2.headers["location"] == "/set-password"
-    setup_token = re.search(r"sms_setup=([^;]+)", r2.headers.get("set-cookie", "")).group(1)
+    setup_token = re.search(
+        r"sms_setup=([^;]+)", r2.headers.get("set-cookie", "")
+    ).group(1)
     setup = await SetupSessionStore().get(setup_token)
     r3 = await client.post(
         "/set-password",
