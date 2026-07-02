@@ -33,14 +33,15 @@ app/
     cookies.py, csrf.py      # cookie-хелперы, CSRF double-submit
     middlewares.py           # CSRF, MethodOverride, Session, SecurityHeaders, RequestID
     templates.py             # Jinja2 env
-    templates/               # base, login, login_password, set_password, admin/*, errors/*
-    static/js/               # tg.js, csrf.js, admin_users.js ; static/css/main.css
+    templates/               # base, login, login_password, set_password, app, admin/*, errors/*
+    static/js/               # tg.js, csrf.js, admin_users.js, app.js ; static/css/main.css
     routers/
       webhooks.py            # POST /api/webhooks/twilio/sms
       auth.py                # /login, /login/password, /set-password, /logout
       telegram_auth.py       # POST /api/telegram/auth (Mini App SSO)
       admin.py               # /api/admin/users, /api/admin/teams, /api/admin/teams/{id}/leader (set_leader)
       admin_ui.py            # GET /admin, /admin/teams (SSR)
+      landing.py             # GET / (диспетчер по роли), GET /app (SSR landing участника/лидера) — ADR-0008
       numbers.py             # /api/numbers CRUD
   application/
     services.py              # SMS-пайплайн (handle_incoming_sms, deliver, retry)
@@ -199,6 +200,21 @@ sequenceDiagram
 Первый вход пользователя, созданного админом (`password_hash IS NULL`, `password_reset_required=true`): после шага-1 логина он направляется на `/set-password`; после успешной установки пароля так же выполняется `link_pending`, если есть `sms_tg_pending`.
 
 Полные контракты endpoints — [05-api-contracts.md](./05-api-contracts.md). Детали безопасности — [08-security.md](./08-security.md).
+
+## Корневой маршрут и per-role landing (ADR-0008)
+
+Пост-логин (`303 → /`), пост-set-password (`303 → /`) и Mini App SSO (`redirect:"/"`) ведут на **единый корневой диспетчер** `GET /` (`routers/landing.py`), который не рендерит контент, а редиректит на landing, достижимый для роли. Так исключён 404 после логина (маршрут `/` реально зарегистрирован) и гарантирован инвариант: у каждой роли есть рабочая стартовая страница.
+
+```mermaid
+flowchart TD
+    Root["GET /"] -->|нет sms_session| Login["302 → /login"]
+    Root -->|role = super_admin| Admin["302 → /admin (200)"]
+    Root -->|role = group_leader / group_member| App["302 → /app (200)"]
+    AppPage["GET /app (SSR)"] -->|member/leader| Render["200: номера команды + статус TG-привязки + add/delete + logout"]
+    AppPage -->|super_admin| Admin
+```
+
+`GET /app` — SSR-страница участника/лидера: сервер инжектирует в контекст номера своей команды (scope `current_user.team_id`), статус собственной Telegram-привязки (`telegram_links`, `dead_at IS NULL`) и `csrf_token`; мутации (add/delete номера) идут через существующие `/api/numbers` (`app.js` + `csrf.js`). Отдельного API для статуса привязки не вводится — данные SSR-инжектятся. Контракты — [05-api-contracts.md](./05-api-contracts.md) §7.
 
 ## Что удаляется из текущего кода
 

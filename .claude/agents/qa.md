@@ -98,6 +98,8 @@ TODO|FIXME|XXX|HACK|WIP|stub|mockData
 - Authz: пользователь A не видит данные пользователя B.
 - Authentication: без токена → 401, протухший токен → 401.
 - Validation: invalid input → 422 / 400.
+- **Redirect follow-through (ОБЯЗАТЕЛЬНО):** при тесте флоу с редиректом (30x) ОБЯЗАТЕЛЬНО следуй по `Location` и утверждай, что конечная страница отдаёт 200 (или иной ожидаемый терминальный код). Проверки только промежуточного 30x/значения `Location` НЕДОСТАТОЧНО — цель редиректа обязана быть реально смонтирована.
+- **Post-login landing per role (ОБЯЗАТЕЛЬНО):** для auth-флоу пройди полный логин под КАЖДОЙ ролью (super_admin / group_leader / group_member) и убедись, что пост-логин landing-страница достижима и отдаёт 200 (не 404/403).
 
 #### Contract tests
 - Response соответствует `02-api-contracts.md` (schema validation).
@@ -247,6 +249,8 @@ JSON по формату ниже.
 - [ ] Contract tests для response schema
 - [ ] Idempotency тесты для polling / async (если применимо)
 - [ ] Sad paths покрыты (4xx, 5xx)
+- [ ] Редиректы протестированы follow-through: конечная страница отдаёт 200, не только 30x
+- [ ] Пост-логин landing достижима под каждой ролью (super_admin / group_leader / group_member)
 - [ ] Coverage соответствует gate
 - [ ] Тесты запущены, результаты зафиксированы
 - [ ] Падения классифицированы (code / test / spec / stub_code)

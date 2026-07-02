@@ -11,6 +11,7 @@
 | [ADR-0005](./ADR-0005-sms-addressing-via-team.md) | Адресация SMS через team + telegram_links (замена подписки /start) | accepted | 2026-07-01 |
 | [ADR-0006](./ADR-0006-data-migration-sqlite-to-pg.md) | Одноразовая миграция данных SQLite → PostgreSQL | accepted | 2026-07-01 |
 | [ADR-0007](./ADR-0007-deploy-behind-shared-edge-nginx.md) | Деплой за общим edge-nginx соседнего сервиса (additive vhost, host certbot) | accepted | 2026-07-02 |
+| [ADR-0008](./ADR-0008-root-route-and-per-role-landing.md) | Корневой маршрут `/` и per-role landing (`/` диспетчер, `/app` для участников) | accepted | 2026-07-02 |
 
 ## Как добавлять ADR
 

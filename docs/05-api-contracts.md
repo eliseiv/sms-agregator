@@ -34,6 +34,8 @@
 
 Источник — [ADR-0002](./adr/ADR-0002-two-step-login.md). Анти-энумерация: несуществующий логин отвечает так же, как существующий (`ready_for_password`).
 
+> **Пост-логин редирект.** Все `303 → /` ниже ведут на корневой диспетчер `GET /` (§7), который редиректит на landing по роли (`/admin` для super_admin, `/app` для участников). `/` — реальный зарегистрированный маршрут; `SAFE_REDIRECT_AFTER_LOGIN` и цели пост-set-password/SSO указывают на существующую и достижимую роли страницу ([ADR-0008](./adr/ADR-0008-root-route-and-per-role-landing.md)).
+
 ### `GET /login`
 - SSR-форма шага-1 (ввод логина). Если Mini App прислал `sms_tg_pending` — cookie уже установлен `POST /api/telegram/auth`.
 
@@ -81,7 +83,7 @@
 - **Rate-limit:** `TG_AUTH` per IP до HMAC; per `telegram_user_id` после HMAC (см. [08-security.md](./08-security.md)).
 - **Логика:** `verify_init_data` (HMAC-SHA256 + `auth_date` TTL). Ветвление:
   - **есть активная `sms_session`** → `self_heal_link` (idempotent upsert привязки к текущему user; NO-OP для живой привязки того же user) → `200 {"linked": false, "healed": true}` (без redirect, без cookie).
-  - **нет сессии, привязка существует** (`telegram_links` с `dead_at IS NULL`) → создать сессию → `200 {"linked": true, "redirect": "/"}` + Set-Cookie `sms_session`,`sms_csrf`.
+  - **нет сессии, привязка существует** (`telegram_links` с `dead_at IS NULL`) → создать сессию → `200 {"linked": true, "redirect": "/"}` + Set-Cookie `sms_session`,`sms_csrf`. Фронт переходит на `/`, который диспетчеризует на landing по роли (§7, [ADR-0008](./adr/ADR-0008-root-route-and-per-role-landing.md)).
   - **нет сессии, привязки нет** → `create_pending` (Redis) → `200 {"linked": false}` + Set-Cookie `sms_tg_pending`.
 - **Ответы ошибок:** `401 {"error":"invalid_init_data"}` (плохой HMAC) / `{"error":"init_data_expired"}` (протух `auth_date`); `429` — rate-limit; при внутренней ошибке self-heal — `200 {"linked": false, "healed": false}` (best-effort, фронт не перезагружается).
 
@@ -187,7 +189,24 @@
 
 ---
 
-## 7. Admin UI (SSR)
+## 7. SSR-страницы (UI)
+
+Источник per-role landing — [ADR-0008](./adr/ADR-0008-root-route-and-per-role-landing.md).
+
+### `GET /` — корневой диспетчер по роли
+- **Guard:** нет (обрабатывает и анонима). **Контента не рендерит** — только редирект.
+- **Логика:** единственная точка выбора landing. Существующие пост-логин/пост-set-password (`303 → /`) и Mini App SSO (`redirect:"/"`) ведут сюда, а `/` доводит до страницы, достижимой для роли.
+- **Ответы:**
+  - `302 → /login` — нет валидной `sms_session`;
+  - `302 → /admin` — `role == super_admin`;
+  - `302 → /app` — `role IN (group_leader, group_member)`.
+
+### `GET /app` — landing участника/лидера (SSR)
+- **Guard:** `require_authenticated`. Роли: `group_leader`, `group_member`. Для `super_admin` (нет команды) — `302 → /admin` (у него landing `/admin`, тупиков нет).
+- **Логика:** SSR Jinja2-страница; scope = `current_user.team_id`. Сервер инжектирует в контекст: список номеров своей команды (тот же набор, что `GET /api/numbers` для участника), статус собственной Telegram-привязки (`has_telegram_link` — есть `telegram_links` текущего user с `dead_at IS NULL`), `team_name`, `display_name`/`username`, `csrf_token`. **Нового API для статуса привязки не вводится** — данные SSR-инжектятся.
+- **Действия на странице:** добавить номер (`POST /api/numbers` — `team_id` берётся из `current_user.team_id`), удалить номер (`DELETE /api/numbers/{id}`), logout (`POST /logout`). Мутации — через существующие endpoints, CSRF double-submit (`csrf.js`/hidden-поле).
+- **Права:** любой участник (member/leader) управляет номерами **своей** команды ([ADR-0005](./adr/ADR-0005-sms-addressing-via-team.md)). Управление участниками команды лидером — вне scope этой итерации ([ADR-0003](./adr/ADR-0003-roles-and-teams.md), [ADR-0008](./adr/ADR-0008-root-route-and-per-role-landing.md) §3).
+- **Ответ:** `200` (SSR HTML) для member/leader; `302 → /admin` для super_admin; `302 → /login` при отсутствии сессии (через `NotAuthenticatedError handler`).
 
 ### `GET /admin`
 - **Guard:** `require_admin`. Jinja2-страница: список пользователей, форма создания, кнопки reset/delete, назначение команды. Использует `admin_users.js` + `csrf.js`.
@@ -195,7 +214,10 @@
 ### `GET /admin/teams`
 - **Guard:** `require_admin`. Jinja2-страница: список команд, создание/переименование/удаление, состав и лидер.
 
-Обе страницы наследуют `base.html` (подключён `telegram-web-app.js` + `tg.js`, CSP `script-src 'self' https://telegram.org`).
+Все SSR-страницы наследуют `base.html` (подключён `telegram-web-app.js` + `tg.js`, CSP `script-src 'self' https://telegram.org`).
+
+### Инвариант достижимости landing (нормативно)
+У **каждой** аутентифицированной роли есть landing, отдающий `200` после диспетчеризации `/`; цель любого пост-логин / пост-set-password / SSO-редиректа существует и доступна роли (см. [ADR-0008](./adr/ADR-0008-root-route-and-per-role-landing.md) §4). QA проверяет рендер `200` после логина для каждой роли ([06-testing-strategy.md](./06-testing-strategy.md)).
 
 ---
 
@@ -219,6 +241,8 @@
 | `/api/admin/teams*` | GET/POST/PATCH/DELETE | `require_admin` | да |
 | `/api/admin/teams/{id}/leader` | PATCH | `require_admin` | да |
 | `/api/numbers*` | GET/POST/DELETE | `require_authenticated` | да |
+| `/` | GET | публичный (диспетчер: 302 по роли/на `/login`) | — |
+| `/app` | GET | `require_authenticated` (member/leader; super_admin → 302 `/admin`) | — |
 | `/admin`, `/admin/teams` | GET | `require_admin` | — |
 | `/health` | GET | публичный | — |
 

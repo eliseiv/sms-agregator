@@ -516,6 +516,106 @@ a:hover { color: var(--color-primary-hover); text-decoration: underline; }
 .team-chip--home { background: var(--color-primary-soft); border-color: var(--color-primary); color: var(--color-primary); }
 .team-chip__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---------- 8a. Landing участника/лидера (/app) -------------------------- */
+.landing__header { margin-bottom: var(--space-6); }
+.landing__title { margin: 0 0 var(--space-2); font-size: var(--font-size-xl); }
+.landing__subtitle {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.landing > .tg-status,
+.landing > .numbers,
+.landing > .add-number { margin-bottom: var(--space-6); }
+.landing__section-title { margin: 0 0 var(--space-3); font-size: var(--font-size-lg); }
+.landing__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.tg-status__note {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.tg-status__note--linked { background: var(--color-success-bg); border-color: var(--color-success); }
+.tg-status__note--unlinked { background: var(--color-info-bg); border-color: var(--color-primary); }
+.tg-status__badge {
+  display: inline-block;
+  padding: 0.15em 0.7em;
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: nowrap;
+  border: 1px solid currentColor;
+}
+.tg-status__badge--ok { color: var(--color-success); }
+.tg-status__badge--off { color: var(--color-primary); }
+
+.numbers-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.number-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  flex-wrap: wrap;
+}
+.number-card__main {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.number-card__phone {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  color: var(--color-text);
+}
+.number-card__label { color: var(--color-text-muted); font-size: var(--font-size-sm); }
+.number-card__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.add-number__form { max-width: 26rem; }
+
+@media (max-width: 640px) {
+  .number-card { flex-direction: column; align-items: stretch; }
+  .number-card__meta { justify-content: space-between; }
+  .add-number__form { max-width: none; }
+}
+
 /* ---------- 9. Dialog ---------------------------------------------------- */
 .dialog {
   border: 1px solid var(--color-border);

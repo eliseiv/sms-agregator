@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+
+{# SSR-landing участника/лидера (docs/05 §7, ADR-0008). Backend (landing.py)
+   инжектит в контекст:
+     - username, display_name, team_name, team_id, user_id;
+     - has_telegram_link (bool) — активная telegram_links текущего user;
+     - numbers[] — тот же набор, что GET /api/numbers для участника:
+       {id, phone_number, team_id, team_name, label, is_active,
+        added_by_user_id, created_at};
+     - csrf_token — для double-submit (мутации /api/numbers, logout).
+
+   Мутации (add/delete) и refresh идут через существующие /api/numbers
+   (app.js + csrf.js, X-CSRF-Token из cookie sms_csrf). Нового API нет.
+   Список номеров рендерится server-side (первый экран + работа без JS для
+   просмотра), app.js перехватывает управление: refresh после мутаций,
+   состояния loading / empty / error / success.
+
+   Logout — в topbar base.html (POST /logout + CSRF), как на страницах админки;
+   отдельную кнопку тут не дублируем.
+   CSP: никаких inline-скриптов/обработчиков/стилей — вся логика в app.js
+   через addEventListener. #}
+
+{% block title %}Мои номера &middot; SMS Агрегатор{% endblock %}
+{% block body_class %}app-landing{% endblock %}
+
+{% block content %}
+<section class="landing" aria-labelledby="landing-heading">
+  <header class="landing__header">
+    <h1 id="landing-heading" class="landing__title">
+      Здравствуйте{% if display_name or username %}, <strong>{{ (display_name or username) | e }}</strong>{% endif %}
+    </h1>
+    {% if team_name %}
+      <p class="landing__subtitle">
+        Команда:
+        <span class="team-chip team-chip--home">
+          <span class="team-chip__name">{{ team_name | e }}</span>
+        </span>
+      </p>
+    {% endif %}
+  </header>
+
+  {# --- Статус Telegram-привязки (SSR из has_telegram_link) --- #}
+  <section class="tg-status" aria-labelledby="tg-status-heading">
+    <h2 id="tg-status-heading" class="landing__section-title">Уведомления в Telegram</h2>
+    {% if has_telegram_link %}
+      <p class="tg-status__note tg-status__note--linked" role="status">
+        <span class="tg-status__badge tg-status__badge--ok">Привязан</span>
+        Telegram привязан — новые SMS вашей команды придут сюда.
+      </p>
+    {% else %}
+      <p class="tg-status__note tg-status__note--unlinked" role="status">
+        <span class="tg-status__badge tg-status__badge--off">Не привязан</span>
+        Telegram ещё не привязан. Откройте это приложение внутри Telegram
+        (Mini App или бота) — привязка выполнится автоматически при входе,
+        после чего уведомления о новых SMS будут приходить в чат.
+      </p>
+    {% endif %}
+  </section>
+
+  {# --- Список номеров команды --- #}
+  <section class="numbers" aria-labelledby="numbers-heading">
+    <div class="landing__section-head">
+      <h2 id="numbers-heading" class="landing__section-title">Номера команды</h2>
+    </div>
+
+    {# app.js рендерит сюда состояния loading / error / empty / success.
+       SSR-рендер ниже — первый экран и просмотр без JS. #}
+    <div class="numbers__root" data-numbers-root aria-live="polite">
+      {% if numbers and numbers | length %}
+        <ul class="numbers-list" data-numbers-list>
+          {% for n in numbers %}
+            <li class="number-card" data-number-id="{{ n.id | e }}">
+              <div class="number-card__main">
+                <span class="number-card__phone">{{ n.phone_number | e }}</span>
+                {% if n.label %}
+                  <span class="number-card__label">{{ n.label | e }}</span>
+                {% endif %}
+              </div>
+              <div class="number-card__meta">
+                <span class="admin-user__badge admin-user__badge--{{ 'group_leader' if n.is_active else 'group_member' }}">
+                  {{ 'Активен' if n.is_active else 'Неактивен' }}
+                </span>
+                <button
+                  type="button"
+                  class="btn btn--danger btn--small"
+                  data-number-delete
+                  data-number-id="{{ n.id | e }}"
+                  data-number-phone="{{ n.phone_number | e }}"
+                  aria-label="Удалить номер {{ n.phone_number | e }}">
+                  Удалить
+                </button>
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div class="admin__empty" data-numbers-empty role="status">
+          <p>Пока нет номеров.</p>
+          <p class="field__hint">Добавьте первый номер команды в форме ниже.</p>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+
+  {# --- Форма добавления номера (POST /api/numbers через csrfFetch) --- #}
+  <section class="add-number" aria-labelledby="add-number-heading">
+    <h2 id="add-number-heading" class="landing__section-title">Добавить номер</h2>
+    <p class="form-error" role="alert" data-add-error hidden></p>
+    <form class="form add-number__form" data-add-number-form novalidate>
+      <div class="field">
+        <label class="field__label" for="add-phone">Номер телефона</label>
+        <input
+          class="field__input"
+          type="tel"
+          id="add-phone"
+          name="phone_number"
+          inputmode="tel"
+          autocomplete="off"
+          required
+          maxlength="16"
+          pattern="\+[1-9]\d{6,14}"
+          placeholder="+71234567890"
+          aria-describedby="add-phone-hint">
+        <p class="field__hint" id="add-phone-hint">Формат E.164: знак «+» и 7–15 цифр, например <code>+71234567890</code>.</p>
+      </div>
+
+      <div class="field">
+        <label class="field__label" for="add-label">Ярлык <span class="field__optional">(необязательно)</span></label>
+        <input
+          class="field__input"
+          type="text"
+          id="add-label"
+          name="label"
+          maxlength="100"
+          autocomplete="off"
+          placeholder="Например: касса, поддержка">
+        <p class="field__hint">До 100 символов — чтобы отличать номера в списке.</p>
+      </div>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary" data-add-submit>Добавить номер</button>
+      </div>
+    </form>
+  </section>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/app.js?v={{ static_v }}"></script>
+{% endblock %}

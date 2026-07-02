@@ -65,6 +65,7 @@ TODO|FIXME|XXX|HACK|WIP|mockData|console\\.log|<div>TODO|Coming soon|lorem ipsum
 - Каждый экран / компонент из scope реализован?
 - Поля forms совпадают с `02-api-contracts.md`?
 - RBAC: видимость экранов соответствует `06-rbac.md`?
+- **Landing reachability (ОБЯЗАТЕЛЬНО):** цель пост-логин-редиректа (`SAFE_REDIRECT_AFTER_LOGIN`) и корневой маршрут `/` реально смонтированы в роутере. У КАЖДОЙ аутентифицированной роли из `06-rbac.md` есть достижимая стартовая страница (не только у admin). Отсутствие маршрута назначения = **major** (функциональный пробел).
 
 ### Шаг 4: API contract compliance
 - Все запросы используют поля, описанные в `02-api-contracts.md`?
@@ -156,6 +157,7 @@ TODO|FIXME|XXX|HACK|WIP|mockData|console\\.log|<div>TODO|Coming soon|lorem ipsum
 - [ ] Pre-review gate соблюдён
 - [ ] Tech-debt sweep пройден
 - [ ] Каждый экран из ТЗ проверен
+- [ ] Цель пост-логин-редиректа и `/` смонтированы; landing достижима для каждой роли
 - [ ] API contract compliance проверен
 - [ ] UI states (loading/error/empty/success) проверены
 - [ ] Безопасность проверена (токены, secrets, console.log)

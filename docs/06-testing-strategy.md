@@ -36,6 +36,7 @@
 ### Auth
 10. `seed_admin`: первый старт → лог `created`; рестарт с тем же env → `unchanged` (идемпотентность).
 11. Двухэтапный логин: `POST /login` → `303 /login/password`; `POST /login/password` (верный пароль) → `303 /`.
+11a. **Корневой маршрут и per-role landing (ADR-0008).** `GET /` без сессии → `302 /login`; с сессией `super_admin` → `302 /admin`; с сессией `group_leader`/`group_member` → `302 /app`. Затем **у каждой роли landing отдаёт `200`**: `GET /admin` (super_admin) → `200`; `GET /app` (leader/member) → `200` и содержит номера своей команды + статус Telegram-привязки + форму добавления номера + logout. `GET /app` для `super_admin` → `302 /admin`. Инвариант: после успешного логина ни одна роль не получает `404`.
 12. Создание пользователя админом → `password_hash IS NULL`, `password_reset_required=true`; первый вход → редирект на `/set-password`; после `POST /set-password` → `303 /`, `password_reset_required=false`.
 13. `reset` → revoke сессий + всех `telegram_links`; `delete` — каскад; попытка удалить лидера непустой команды → `409`.
 14. Анти-энумерация: `POST /login` для несуществующего и существующего логина → одинаковый ответ/тайминг.
