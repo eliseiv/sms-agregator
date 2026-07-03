@@ -66,6 +66,7 @@ TODO|FIXME|XXX|HACK|WIP|mockData|console\\.log|<div>TODO|Coming soon|lorem ipsum
 - Поля forms совпадают с `02-api-contracts.md`?
 - RBAC: видимость экранов соответствует `06-rbac.md`?
 - **Landing reachability (ОБЯЗАТЕЛЬНО):** цель пост-логин-редиректа (`SAFE_REDIRECT_AFTER_LOGIN`) и корневой маршрут `/` реально смонтированы в роутере. У КАЖДОЙ аутентифицированной роли из `06-rbac.md` есть достижимая стартовая страница (не только у admin). Отсутствие маршрута назначения = **major** (функциональный пробел).
+- **Reference parity (ОБЯЗАТЕЛЬНО, если задан референс):** если контракт требует «точь в точь как `<референс>`», сверь реализацию с перечнем паритета (структура страниц, набор колонок таблиц, группировки, дизайн-блоки, поведение). Любое отклонение или добавление сверх перечня без явной санкции пользователя (лишняя колонка, иная группировка, изменённый дизайн) = **major** (функциональный пробел), не minor.
 
 ### Шаг 4: API contract compliance
 - Все запросы используют поля, описанные в `02-api-contracts.md`?
@@ -97,10 +98,12 @@ TODO|FIXME|XXX|HACK|WIP|mockData|console\\.log|<div>TODO|Coming soon|lorem ipsum
 | Severity | Когда применять |
 |---|---|
 | **critical** | `production_ready: false`; tech-debt маркер без `TD-NNN`; выдуманное поле API response; hardcoded API key / secret; `console.log` с чувствительными данными; токен в неправильном хранилище вопреки `docs/05-security.md` |
-| **major** | Функциональный пробел из ТЗ (экран / компонент / state отсутствует); пропущенный loading/error/empty state на data-page; нарушение strict-typing проекта без cross-ref TD-NNN; `<div onClick>` вместо `<button>`; hardcoded локализуемый текст (если в проекте i18n) |
+| **major** | Функциональный пробел из ТЗ (экран / компонент / state отсутствует); пропущенный loading/error/empty state на data-page; нарушение strict-typing проекта без cross-ref TD-NNN; `<div onClick>` вместо `<button>`; hardcoded локализуемый текст (если в проекте i18n); отклонение от заданного референса (лишние/недостающие колонки, иная группировка/дизайн/поведение) без явной санкции пользователя; элемент, пропадающий/мигающий после отработки клиентского JS в обычном браузере |
 | **minor** | Опечатка, стилистика, отсутствие alt у `<img>` там, где a11y не критичен в проекте |
 
 ⚠️ **Функциональный пробел = `major`, не minor.** Пропущенный error state на data-page — major.
+
+⚠️ **Vanilla JS без JS-тулчейна ≠ дефект.** Если правились чистые `.js`-файлы, а JS-тулчейн (eslint/prettier/tsc) в `docs/02-tech-stack.md` отсутствует **по дизайну** (Python-first SSR), НЕ штрафуй за отсутствие lint/format/typecheck по JS и НЕ считай это `production_ready: false`. Достаточная проверка frontend: `node --check` (синтаксис) + поведенческая валидация логики (симуляция/песочница). Требуй `rework`, только если отсутствует такая замена, либо если затронут Python-код без обязательного `ruff`/`mypy`/format.
 
 ### Шаг 9: Verdict
 - `critical` или `major` → `verdict: "rework"`.
@@ -158,6 +161,7 @@ TODO|FIXME|XXX|HACK|WIP|mockData|console\\.log|<div>TODO|Coming soon|lorem ipsum
 - [ ] Tech-debt sweep пройден
 - [ ] Каждый экран из ТЗ проверен
 - [ ] Цель пост-логин-редиректа и `/` смонтированы; landing достижима для каждой роли
+- [ ] Если задан референс — паритет (структура/колонки/группировки/дизайн/поведение) сверен; отклонения без санкции классифицированы как major
 - [ ] API contract compliance проверен
 - [ ] UI states (loading/error/empty/success) проверены
 - [ ] Безопасность проверена (токены, secrets, console.log)
