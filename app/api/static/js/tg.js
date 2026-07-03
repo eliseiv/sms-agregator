@@ -6,8 +6,16 @@
  * glue-скрипт; оба выполняются после парсинга DOM (до DOMContentLoaded), поэтому
  * document.getElementById для элементов страницы уже доступен.
  *
- * В обычном браузере ``window.Telegram`` не определён — Telegram-специфичные
- * действия (ready/expand/тема, авто-SSO) пропускаются. Скрипт при этом НЕ делает
+ * ВАЖНО: официальный SDK (telegram-web-app.js) ВСЕГДА создаёт
+ * ``window.Telegram.WebApp`` — и в реальном Mini App, и в обычном браузере.
+ * Поэтому само наличие объекта НЕ является признаком Telegram-контекста
+ * (иначе в браузере ложно навешивался бы класс ``tg-app`` и CSS прятал бы
+ * верхнюю навигацию — см. main.css ``body.tg-app .topnav``). Браузерный стаб
+ * SDK отдаёт ПУСТОЙ ``initData`` и ``platform === 'unknown'``; реальный Mini
+ * App — непустой ``initData`` и/или конкретный ``platform`` (≠ 'unknown').
+ * Детект ``inTelegram`` опирается именно на это. В обычном браузере
+ * Telegram-специфичные действия (ready/expand/тема, класс ``tg-app``, авто-SSO)
+ * пропускаются — навигация остаётся видимой. Скрипт при этом НЕ делает
  * early-return целиком: он ещё связывает кнопку «Войти» на /login (см. ниже),
  * что нужно и в браузере. Никаких мутаций DOM вне /login в браузере не будет —
  * элемент кнопки существует только в login.html.
@@ -72,7 +80,16 @@
   }
 
   var tg = window.Telegram && window.Telegram.WebApp;
-  var inTelegram = !!tg;
+
+  // Детект РЕАЛЬНОГО Mini App vs браузерного стаба SDK.
+  // telegram-web-app.js создаёт ``window.Telegram.WebApp`` всегда, поэтому !!tg
+  // недостаточно. В браузере стаб отдаёт пустой initData и platform==='unknown';
+  // реальный Mini App — непустой initData и/или platform !== 'unknown'.
+  // initData и platform вычисляем ДО inTelegram — от них зависит сам детект.
+  var initData = tg && typeof tg.initData === "string" ? tg.initData : "";
+  var tgPlatform =
+    tg && typeof tg.platform === "string" ? tg.platform : "unknown";
+  var inTelegram = !!tg && (initData !== "" || tgPlatform !== "unknown");
 
   // --- Telegram-специфичная инициализация (только в Mini App) ---------------
   if (inTelegram) {
@@ -114,9 +131,6 @@
       tg.onEvent("themeChanged", applyTheme);
     }
   }
-
-  var initData =
-    inTelegram && typeof tg.initData === "string" ? tg.initData : "";
 
   /**
    * POST initData на /api/telegram/auth и обработка ответа.
