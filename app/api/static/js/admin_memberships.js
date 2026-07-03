@@ -1,22 +1,25 @@
 /* =============================================================================
-   admin_memberships.js — управление членством пользователя в командах на /admin
-   (multi-team, ADR-0012, docs/05 §4).
+   admin_memberships.js — управление командами пользователя на /admin
+   («+»-меню, docs/05 §4, §7; multi-team ADR-0012; паритет ADR-0015).
 
-   Прогрессивное улучшение SSR-разметки users.html. Endpoints:
-     - POST   /api/admin/users/{id}/teams          {team_id}  — добавить доп. членство
-     - DELETE /api/admin/users/{id}/teams/{team_id}           — убрать доп. членство
+   Кнопка «+» (data-admin-menu-trigger, класс admin-users-table__add-group) в
+   ячейке имени открывает меню-диалог (data-admin-actions-dialog) с двумя
+   пунктами:
+     - «Переместить в другую команду» → PATCH /api/admin/users/{id} {team_id}
+       (сменa ДОМАШНЕЙ команды; задизейблено для лидера — backend тоже 409).
+     - «Добавить в другую команду»    → POST  /api/admin/users/{id}/teams {team_id}
+       (доп. членство; список команд исключает уже занятые — data-member-gids).
 
-   Add: кнопка [data-admin-add-team] открывает диалог [data-admin-add-dialog];
-   список команд исключает те, где пользователь уже состоит (data-member-team-ids).
-   Remove: форма [data-admin-remove-membership] (no-JS fallback — POST на ТОТ ЖЕ
-   путь ресурса /api/admin/users/{id}/teams/{team_id} + _method=DELETE, без
-   /delete-суффикса) перехватывается — confirm + DELETE через SMS.csrfFetch.
+   Удаление доп. членства — «×» на чипе (data-admin-remove-membership): форма с
+   no-JS fallback POST на ТОТ ЖЕ путь ресурса /api/admin/users/{id}/teams/{team_id}
+   + _method=DELETE (docs §4; MethodOverride whitelist ^/api/admin/users/\d+/teams/\d+$),
+   перехватывается → confirm + DELETE через SMS.csrfFetch.
 
-   Коды ошибок (cannot_add_super_admin_to_team, membership_already_exists,
-   cannot_remove_home_membership, membership_not_found, team_not_found) —
-   человекочитаемо через SMS.readJsonError/ERROR_MAP (csrf.js). После успеха —
-   reload (SSR-группировка остаётся единственным источником порядка); флеш
-   переносится через sessionStorage (совместимо с admin_users.js replayFlash).
+   Контекст «+» захватывается при клике (data-user-id/-username/-current-gid/
+   -is-leader/-member-gids) и разделяется диалогами перевода и добавления.
+
+   После успеха — reload (SSR-группировка — единственный источник порядка);
+   флеш переносится через sessionStorage (ключ общий с admin_users.js).
 
    CSP-безопасно: без inline-скриптов/onclick, события — addEventListener,
    пользовательские данные — textContent.
@@ -56,7 +59,121 @@
     node.hidden = !text;
   }
 
-  /* ---- добавление доп. членства ----------------------------------------- */
+  function parseGidList(raw) {
+    if (!raw) return [];
+    try {
+      var arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) return [];
+      return arr.map(function (n) { return parseInt(n, 10); })
+                .filter(function (n) { return Number.isFinite(n) && n > 0; });
+    } catch (_e) {
+      return [];
+    }
+  }
+
+  /* ---- контекст «+» (общий для перевода и добавления) ------------------- */
+
+  var menuUserId = 0;
+  var menuUsername = '';
+  var menuCurrentGid = 0;   // домашняя команда пользователя
+  var menuMemberGids = [];  // все команды пользователя
+  var menuIsLeader = false;
+
+  /* ---- меню-диалог действий --------------------------------------------- */
+
+  var actionsDialog = document.querySelector('[data-admin-actions-dialog]');
+  var actionsUsername = document.querySelector('[data-admin-actions-username]');
+  var actionsMoveBtn = document.querySelector('[data-admin-actions-move]');
+  var actionsMoveDisabled = document.querySelector('[data-admin-actions-move-disabled]');
+  var actionsAddBtn = document.querySelector('[data-admin-actions-add]');
+
+  document.addEventListener('click', function (event) {
+    var trigger = event.target.closest && event.target.closest('[data-admin-menu-trigger]');
+    if (!trigger || !actionsDialog) return;
+    menuUserId = parseInt(trigger.getAttribute('data-user-id') || '0', 10);
+    menuUsername = trigger.getAttribute('data-username') || '';
+    menuCurrentGid = parseInt(trigger.getAttribute('data-current-gid') || '0', 10);
+    menuMemberGids = parseGidList(trigger.getAttribute('data-member-gids'));
+    menuIsLeader = trigger.getAttribute('data-is-leader') === '1';
+    if (!menuUserId) return;
+
+    if (actionsUsername) actionsUsername.textContent = menuUsername;
+    // «Переместить» недоступно лидеру.
+    if (actionsMoveBtn) {
+      actionsMoveBtn.disabled = menuIsLeader;
+      actionsMoveBtn.hidden = menuIsLeader;
+    }
+    if (actionsMoveDisabled) actionsMoveDisabled.hidden = !menuIsLeader;
+
+    openDialog(actionsDialog);
+    var firstAction = (actionsMoveBtn && !actionsMoveBtn.hidden) ? actionsMoveBtn : actionsAddBtn;
+    if (firstAction) { try { firstAction.focus(); } catch (_e) { /* игнор */ } }
+  });
+
+  if (actionsMoveBtn) {
+    actionsMoveBtn.addEventListener('click', function () {
+      if (menuIsLeader) return;
+      closeDialog(actionsDialog);
+      openMoveDialog();
+    });
+  }
+  if (actionsAddBtn) {
+    actionsAddBtn.addEventListener('click', function () {
+      closeDialog(actionsDialog);
+      openAddDialog();
+    });
+  }
+
+  /* ---- перевод в другую команду (PATCH /api/admin/users/{id}) ----------- */
+
+  var moveDialog = document.querySelector('[data-admin-move-dialog]');
+  var moveForm = document.querySelector('[data-admin-move-form]');
+  var moveSelect = document.querySelector('[data-admin-move-select]');
+  var moveUsername = document.querySelector('[data-admin-move-username]');
+  var moveError = document.querySelector('[data-admin-move-error]');
+  var moveCancel = document.querySelector('[data-admin-move-cancel]');
+  var moveGo = document.querySelector('[data-admin-move-go]');
+
+  function openMoveDialog() {
+    if (!moveDialog || !moveSelect || !menuUserId) return;
+    if (moveUsername) moveUsername.textContent = menuUsername;
+    showError(moveError, '');
+    // Предвыбрать текущую домашнюю команду, чтобы админ видел исходное состояние.
+    if (menuCurrentGid) moveSelect.value = String(menuCurrentGid);
+    else moveSelect.selectedIndex = 0;
+    openDialog(moveDialog);
+  }
+
+  if (moveCancel) moveCancel.addEventListener('click', function () { closeDialog(moveDialog); });
+
+  if (moveForm) {
+    moveForm.addEventListener('submit', function (event) {
+      event.preventDefault();
+      if (!menuUserId || !moveSelect) return;
+      showError(moveError, '');
+      var teamId = parseInt((moveSelect.value || '').toString(), 10);
+      if (!Number.isFinite(teamId) || teamId < 1) { showError(moveError, 'Выберите команду.'); return; }
+      if (teamId === menuCurrentGid) { showError(moveError, 'Пользователь уже в этой команде.'); return; }
+      if (moveGo) moveGo.disabled = true;
+      SMS.csrfFetch('/api/admin/users/' + encodeURIComponent(menuUserId), { method: 'PATCH', body: { team_id: teamId } })
+        .then(function (resp) {
+          if (resp.ok) {
+            reloadWithFlash('Пользователь переведён в другую команду.', 'success');
+            return null;
+          }
+          return SMS.readJsonError(resp).then(function (e) {
+            showError(moveError, e.message);
+            if (moveGo) moveGo.disabled = false;
+          });
+        })
+        .catch(function () {
+          showError(moveError, 'Сетевая ошибка. Попробуйте ещё раз.');
+          if (moveGo) moveGo.disabled = false;
+        });
+    });
+  }
+
+  /* ---- добавление доп. членства (POST /api/admin/users/{id}/teams) ------ */
 
   var addDialog = document.querySelector('[data-admin-add-dialog]');
   var addForm = document.querySelector('[data-admin-add-form]');
@@ -68,10 +185,8 @@
   var addGo = document.querySelector('[data-admin-add-go]');
   var addError = document.querySelector('[data-admin-add-error]');
 
-  var pendingAddUserId = null;
-
   // Полный набор опций команд захватываем один раз — на каждое открытие
-  // пересобираем select, исключая команды пользователя.
+  // пересобираем select, исключая команды, где пользователь уже состоит.
   var allTeamOptions = [];
   if (addSelect) {
     allTeamOptions = Array.prototype.slice.call(addSelect.options).map(function (opt) {
@@ -79,35 +194,14 @@
     });
   }
 
-  function parseMemberTeamIds(btn) {
-    var raw = btn.getAttribute('data-member-team-ids');
-    if (!raw) return {};
-    try {
-      var arr = JSON.parse(raw);
-      if (!Array.isArray(arr)) return {};
-      var set = {};
-      arr.forEach(function (id) { set[String(id)] = true; });
-      return set;
-    } catch (_e) {
-      return {};
-    }
-  }
-
-  function openAddDialog(btn) {
-    if (!addDialog || !addSelect) return;
-    pendingAddUserId = btn.getAttribute('data-user-id');
-    if (!pendingAddUserId) return;
-    var username = btn.getAttribute('data-username') || '';
-    if (addUsername) addUsername.textContent = username;
+  function openAddDialog() {
+    if (!addDialog || !addSelect || !menuUserId) return;
+    if (addUsername) addUsername.textContent = menuUsername;
     showError(addError, '');
 
-    var joined = parseMemberTeamIds(btn);
+    var joined = {};
+    menuMemberGids.forEach(function (g) { joined[String(g)] = true; });
     while (addSelect.firstChild) addSelect.removeChild(addSelect.firstChild);
-
-    var placeholder = document.createElement('option');
-    placeholder.value = '';
-    placeholder.textContent = '— выберите команду —';
-    addSelect.appendChild(placeholder);
 
     var available = 0;
     allTeamOptions.forEach(function (o) {
@@ -123,36 +217,23 @@
     if (addField) addField.hidden = !has;
     if (addEmpty) addEmpty.hidden = has;
     if (addGo) addGo.disabled = !has;
-    addSelect.value = '';
+    if (has) addSelect.selectedIndex = 0;
 
     openDialog(addDialog);
-    if (has) {
-      try { addSelect.focus(); } catch (_e) { /* игнор */ }
-    }
+    if (has) { try { addSelect.focus(); } catch (_e) { /* игнор */ } }
   }
 
-  document.addEventListener('click', function (event) {
-    var btn = event.target.closest && event.target.closest('[data-admin-add-team]');
-    if (!btn) return;
-    openAddDialog(btn);
-  });
-
-  if (addCancel) {
-    addCancel.addEventListener('click', function () { closeDialog(addDialog); });
-  }
+  if (addCancel) addCancel.addEventListener('click', function () { closeDialog(addDialog); });
 
   if (addForm) {
     addForm.addEventListener('submit', function (event) {
       event.preventDefault();
-      if (!pendingAddUserId || !addSelect) return;
+      if (!menuUserId || !addSelect) return;
       showError(addError, '');
       var teamId = parseInt((addSelect.value || '').toString(), 10);
-      if (!Number.isFinite(teamId) || teamId < 1) {
-        showError(addError, 'Выберите команду.');
-        return;
-      }
+      if (!Number.isFinite(teamId) || teamId < 1) { showError(addError, 'Выберите команду.'); return; }
       if (addGo) addGo.disabled = true;
-      SMS.csrfFetch('/api/admin/users/' + encodeURIComponent(pendingAddUserId) + '/teams', {
+      SMS.csrfFetch('/api/admin/users/' + encodeURIComponent(menuUserId) + '/teams', {
         method: 'POST',
         body: { team_id: teamId }
       })
@@ -173,7 +254,7 @@
     });
   }
 
-  /* ---- удаление доп. членства (делегирование submit) -------------------- */
+  /* ---- удаление доп. членства (делегирование submit «×») ---------------- */
 
   document.addEventListener('submit', function (event) {
     var form = event.target.closest && event.target.closest('[data-admin-remove-membership]');

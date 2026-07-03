@@ -2,46 +2,42 @@
 {% import "_macros.html" as m with context %}
 
 {# =============================================================================
-   /admin — пользователи (SSR-группировка) + распределение unassigned-номеров.
+   /admin — пользователи (визуально-структурный паритет с mail-agregator,
+   ADR-0015). Единая таблица `admin-users-table` с `<tbody>`-бандингом по
+   командам; один пользователь = одна строка в бакете его домашней команды;
+   все команды — чипами в колонке «Команда». Ниже — секция распределения
+   unassigned-номеров (ADR-0009/0013, sms-специфичное дополнение).
 
-   Источник истины: docs/05-api-contracts §7 (SSR-контекст), §4/§4a (API),
-   ADR-0012 (multi-team). Backend предгруппирует данные в Python и инжектирует:
-     - super_admins: list[{id, username, display_name, role, created_at,
-                            last_login_at, has_telegram_link}]
-     - team_sections: list[{team_id, team_name, leader_user_id, members: [
-                            {id, username, display_name, role, is_leader,
-                             is_home, team_ids, has_telegram_link,
-                             password_reset_required, created_at,
-                             last_login_at}]}]
-       Multi-team (ADR-0012): пользователь попадает в КАЖДУЮ свою team_section;
-       в домашней команде is_home=true (бейдж «домашняя»), в доп. командах —
-       is_home=false (доступна кнопка «Убрать из команды»). team_ids — все
-       команды пользователя (для исключения уже занятых в диалоге «+ команда»).
-     - teams: list[{id, name}]  — для select создания/перевода/членства/назначения
+   Источник истины: docs/05-api-contracts §7 «Паритет /admin (НОРМАТИВНО)» +
+   подраздел «SSR-контекст», §4/§4a (API), §5 (teams); ADR-0015 (паритет),
+   ADR-0012 (multi-team), docs/03 §«Подсветка команд» (banding в шаблоне).
+
+   SSR-контекст (литеральные имена, backend инжектирует — split-ownership):
+     - user_groups: list[{team_id: int|None, team_name: str|None, users: [...]}]
+         бакеты в порядке сортировки (§4): super_admin/без-команды первым →
+         командные по team_name → лидер первым → username. Каждый <user>:
+         {id, username, display_name, role, home_team ({id,name}|None),
+          memberships (list[{id,name}]), created_at, last_login_at,
+          password_reset_required}. has_telegram_link на /admin НЕ входит
+          (Q-ADMIN-1, вариант «a» — чистый паритет).
+     - teams: list[{id, name, leader_user_id}]  — для select диалогов/номеров.
+     - q, total, page, limit  — поиск/пагинация.
      - unassigned_numbers: list[{id, phone_number, label, is_active, created_at}]
-     - csrf_token, is_super_admin
+     - csrf_token, is_super_admin.
 
-   Секция «Администраторы» рендерится ПЕРВОЙ (нейтральный banding --no-team),
-   затем секции по командам с чередующейся подсветкой --band-a / --band-b
-   (namespace-счётчик, docs/03 §«Подсветка команд»); внутри — лидер первым.
+   Banding вычисляется В ШАБЛОНЕ (namespace-счётчик; чередование только по
+   командным бакетам; бакет «без команды» → нейтральный --no-group, первым).
+   Домашний чип = mem.id == home_team.id.
 
-   Действия (create / reset / move / delete) — JS-диалоги через SMS.csrfFetch
-   (double-submit X-CSRF-Token), обработчики в admin_users.js. Членство
-   (add/remove доп. команды, POST/DELETE .../teams) — admin_memberships.js.
-   Назначение команды номеру — форма с _method=PATCH (no-JS fallback, docs §7),
-   перехват + AJAX в admin_numbers.js.
+   Действия: create-user / create-team / reset / delete — JS-диалоги через
+   SMS.csrfFetch (double-submit X-CSRF-Token), admin_users.js. Управление
+   командами («+»-меню: перевод/добавление/удаление членства) —
+   admin_memberships.js. Назначение команды номеру — admin_numbers.js.
+   CSP-безопасно: без inline-обработчиков/стилей; данные для JS — data-атрибуты.
    ========================================================================== #}
 
 {% block title %}Пользователи &middot; SMS Агрегатор{% endblock %}
 {% block body_class %}admin-users{% endblock %}
-
-{%- macro dt_short(value) -%}
-{{- (value | string)[:16] | replace('T', ' ') | e -}}
-{%- endmacro -%}
-
-{%- macro user_name(u) -%}
-{%- if u.display_name -%}{{ u.display_name | e }} ({{ u.username | e }}){%- else -%}{{ u.username | e }}{%- endif -%}
-{%- endmacro -%}
 
 {% block content %}
 <section class="admin" aria-labelledby="admin-heading">
@@ -50,172 +46,177 @@
     <div class="admin__actions">
       <a class="topnav__link" href="/admin/teams">Команды &rarr;</a>
       <button type="button" class="btn btn--primary" data-admin-create-user>+ Создать пользователя</button>
+      <button type="button" class="btn btn--secondary" data-admin-create-team>+ Создать команду</button>
     </div>
   </header>
 
-  {% if not super_admins and not team_sections %}
+  {# Поиск по логину — GET-форма, значение сохраняется в поле (docs §7). #}
+  <form method="GET" action="/admin" class="admin__search inline-form" role="search">
+    <label class="visually-hidden" for="admin-search">Поиск пользователей</label>
+    <input
+      class="field__input"
+      id="admin-search"
+      type="search"
+      name="q"
+      value="{{ q | default('') | e }}"
+      placeholder="Поиск по логину">
+    <button class="btn btn--secondary" type="submit">Найти</button>
+  </form>
+
+  {% if not user_groups %}
+    {# Empty-state: пустой набор, в т.ч. при непустом q (docs §7). #}
     <div class="admin__empty" role="status">
-      <p>Пользователей пока нет.</p>
-      <p class="field__hint">Нажмите «Создать пользователя», чтобы добавить первого.</p>
+      <p>По вашему запросу пользователи не найдены.</p>
     </div>
   {% else %}
-
-    {# --- Секция «Администраторы» (первая, docs §7) ----------------------- #}
-    {% if super_admins %}
-    <section class="admin__group admin__group--no-team" aria-labelledby="grp-admins-title">
-      <div class="admin__group-head">
-        <h2 id="grp-admins-title" class="admin__group-title">Администраторы</h2>
-        <span class="admin__group-count">{{ super_admins | length }}</span>
-      </div>
-      <div class="table-wrapper">
-        <table class="admin-users-table">
-          <thead>
-            <tr>
-              <th scope="col">Имя</th>
-              <th scope="col">Роль</th>
-              <th scope="col">Создан</th>
-              <th scope="col">Последний вход</th>
-              <th scope="col">Telegram</th>
-              <th scope="col" class="admin-users-table__actions-col">Действия</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for u in super_admins %}
-            <tr class="admin-users-table__row admin-users-table__row--system">
-              <td class="admin-users-table__name">{{ user_name(u) }}</td>
-              <td class="admin-users-table__role">
-                <span class="admin-user__badge admin-user__badge--super_admin">{{ m.role_label('super_admin') }}</span>
-              </td>
-              <td class="admin-users-table__date">{{ dt_short(u.created_at) or '—' }}</td>
-              <td class="admin-users-table__date">
-                {% if u.last_login_at %}{{ dt_short(u.last_login_at) }}{% else %}<span class="admin-users-table__muted">никогда</span>{% endif %}
-              </td>
-              <td class="admin-users-table__tg">
-                {% if u.has_telegram_link %}<span class="admin-user__badge admin-user__badge--group_leader">привязан</span>{% else %}<span class="admin-users-table__muted">—</span>{% endif %}
-              </td>
-              <td class="admin-users-table__actions">
-                <span class="admin-users-table__muted">системный</span>
-              </td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </section>
-    {% endif %}
-
-    {# --- Секции по командам (лидер первым; banding --band-a/--band-b) ----- #}
-    {# Подсветка команд (docs/03 §«Подсветка команд»): banding-класс чередуется
-       по секциям через namespace-счётчик. CSP-safe — только CSS-классы. #}
-    {% set band = namespace(value=0) %}
-    {% for sec in team_sections %}
-    {% set _band_class = 'admin__group--band-a' if band.value == 0 else 'admin__group--band-b' %}
-    {% set band.value = 1 - band.value %}
-    <section class="admin__group {{ _band_class }}" aria-labelledby="grp-team-{{ sec.team_id }}-title">
-      <div class="admin__group-head">
-        <h2 id="grp-team-{{ sec.team_id }}-title" class="admin__group-title">{{ sec.team_name | e }}</h2>
-        <span class="admin__group-count">{{ sec.members | length }} участник(ов)</span>
-      </div>
-      {% if sec.members %}
-      <div class="table-wrapper">
-        <table class="admin-users-table">
-          <thead>
-            <tr>
-              <th scope="col">Имя</th>
-              <th scope="col">Роль</th>
-              <th scope="col">Создан</th>
-              <th scope="col">Последний вход</th>
-              <th scope="col">Telegram</th>
-              <th scope="col" class="admin-users-table__actions-col">Действия</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for u in sec.members %}
-            {% set _role = 'group_leader' if u.is_leader else (u.role or 'group_member') %}
-            {# is_home: домашняя команда пользователя (default true — при
-               ещё-не-обновлённом backend пользователь показан только в home). #}
-            {% set _is_home = u.is_home if u.is_home is defined else true %}
-            <tr class="admin-users-table__row">
-              <td class="admin-users-table__name">
-                {{ user_name(u) }}
-                {% if _is_home %}
-                  <span class="admin-user__badge admin-user__badge--home" title="Домашняя (первичная) команда">домашняя</span>
-                {% else %}
-                  <span class="admin-user__badge admin-user__badge--extra" title="Дополнительное членство">доп.</span>
-                {% endif %}
-                {% if u.password_reset_required %}
-                  <span class="admin-user__badge admin-user__badge--warn" title="Пароль ещё не задан">ждёт пароль</span>
-                {% endif %}
-              </td>
-              <td class="admin-users-table__role">
-                <span class="admin-user__badge admin-user__badge--{{ _role | e }}">{{ m.role_label(_role) }}</span>
-              </td>
-              <td class="admin-users-table__date">{{ dt_short(u.created_at) or '—' }}</td>
-              <td class="admin-users-table__date">
-                {% if u.last_login_at %}{{ dt_short(u.last_login_at) }}{% else %}<span class="admin-users-table__muted">никогда</span>{% endif %}
-              </td>
-              <td class="admin-users-table__tg">
-                {% if u.has_telegram_link %}<span class="admin-user__badge admin-user__badge--group_leader">привязан</span>{% else %}<span class="admin-users-table__muted">—</span>{% endif %}
-              </td>
-              <td class="admin-users-table__actions">
-                {% if _is_home %}
-                  {# Глобальные действия и «+ команда» — только в домашней секции,
-                     чтобы не дублировать их в каждой доп. команде. #}
-                  <button type="button" class="btn btn--secondary btn--small"
-                          data-admin-reset
-                          data-user-id="{{ u.id }}"
-                          data-username="{{ u.username | e }}">Сброс</button>
-                  <button type="button" class="btn btn--secondary btn--small"
-                          data-admin-move
-                          data-user-id="{{ u.id }}"
-                          data-username="{{ u.username | e }}"
-                          data-team-id="{{ sec.team_id }}"
-                          data-is-leader="{{ '1' if u.is_leader else '0' }}">Перевести</button>
-                  <button type="button" class="btn btn--secondary btn--small"
-                          data-admin-add-team
-                          data-user-id="{{ u.id }}"
-                          data-username="{{ u.username | e }}"
-                          data-member-team-ids="{{ (u.team_ids | default([])) | tojson | e }}">+ команда</button>
-                  <button type="button" class="btn btn--danger btn--small"
-                          data-admin-delete
-                          data-user-id="{{ u.id }}"
-                          data-username="{{ u.username | e }}">Удалить</button>
-                {% else %}
-                  {# Доп. членство — «Убрать из команды». No-JS fallback: POST на
-                     ТОТ ЖЕ путь ресурса /api/admin/users/{id}/teams/{team_id} +
-                     _method=DELETE (docs §4; MethodOverride whitelist
-                     ^/api/admin/users/\d+/teams/\d+$). admin_memberships.js
-                     перехватывает submit. #}
-                  <form class="inline-form"
-                        method="POST"
-                        action="/api/admin/users/{{ u.id }}/teams/{{ sec.team_id }}"
-                        data-admin-remove-membership
+    {# Banding (docs/03 §«Подсветка команд»): класс банда чередуется по бакетам
+       user_groups через namespace-счётчик, только по командным бакетам; бакет
+       «без команды» (super_admin) — нейтральный --no-group, рендерится первым.
+       CSP-safe — только CSS-классы. #}
+    {% set band_idx = namespace(value=0) %}
+    <div class="user-groups-list">
+      <table class="admin-users-table">
+        <thead>
+          <tr>
+            <th scope="col">Имя</th>
+            <th scope="col">Роль</th>
+            <th scope="col">Команда</th>
+            <th scope="col">Создан</th>
+            <th scope="col">Последний вход</th>
+            <th scope="col" class="admin-users-table__actions-col">Действия</th>
+          </tr>
+        </thead>
+        {% for bucket in user_groups %}
+          {% set _tid = bucket.team_id or 0 %}
+          {% if _tid == 0 %}
+            {% set _band_class = 'user-group--no-group' %}
+          {% else %}
+            {% set _band_class = 'user-group--band-' ~ ('a' if band_idx.value == 0 else 'b') %}
+            {% set band_idx.value = 1 - band_idx.value %}
+          {% endif %}
+          {# Визуальный зазор МЕЖДУ бакетами — отдельный <tbody>, чтобы он не
+             перенимал рамку/hover бакета. Внутри бакета строки — вплотную. #}
+          {% if not loop.first %}
+            <tbody class="user-group__spacer" aria-hidden="true">
+              <tr><td colspan="6"></td></tr>
+            </tbody>
+          {% endif %}
+          <tbody class="user-group {{ _band_class }}" data-group-id="{{ _tid }}">
+            {% for u in bucket.users %}
+              {% set _is_super = u.role == 'super_admin' %}
+              {% set _home_tid = u.home_team.id if u.home_team else 0 %}
+              <tr class="admin-users-table__row {% if _is_super %}admin-users-table__row--system{% endif %}">
+                <td class="admin-users-table__name">
+                  <div class="admin-users-table__name-row">
+                    <span class="admin-users-table__name-text">{{ m.effective_user_name(u) }}</span>
+                    {% if not _is_super %}
+                      {# «+» открывает меню-диалог управления командами (перевод /
+                         добавление). Для лидера «Переместить» задизейблено
+                         (admin_memberships.js; backend тоже отклоняет 409).
+                         data-member-gids — все команды пользователя, чтобы
+                         диалог «Добавить» исключил уже занятые. #}
+                      <button
+                        type="button"
+                        class="admin-users-table__add-group"
+                        title="Управление командами"
+                        aria-label="Управление командами пользователя {{ u.username | e }}"
+                        aria-haspopup="dialog"
+                        data-admin-menu-trigger
                         data-user-id="{{ u.id }}"
-                        data-team-id="{{ sec.team_id }}"
                         data-username="{{ u.username | e }}"
-                        data-team-name="{{ sec.team_name | e }}">
-                    {{ m.csrf_input() }}
-                    <input type="hidden" name="_method" value="DELETE">
-                    <button type="submit" class="btn btn--danger btn--small"
-                            aria-label="Убрать {{ u.username | e }} из команды {{ sec.team_name | e }}">Убрать из команды</button>
-                  </form>
-                {% endif %}
-              </td>
-            </tr>
+                        data-current-gid="{{ _home_tid }}"
+                        data-is-leader="{{ '1' if u.role == 'group_leader' else '0' }}"
+                        data-member-gids="{{ (u.memberships | default([]) | map(attribute='id') | list) | tojson | e }}">+</button>
+                    {% endif %}
+                  </div>
+                </td>
+                <td class="admin-users-table__role">
+                  {% if u.role %}
+                    <span class="admin-user__badge admin-user__badge--{{ u.role | e }}">{{ m.role_label(u.role) }}</span>
+                  {% else %}
+                    <span class="admin-users-table__muted">&mdash;</span>
+                  {% endif %}
+                </td>
+                <td class="admin-users-table__group">
+                  {# Все команды пользователя чипами. Домашний чип
+                     (mem.id == home_team.id) — без «×»; доп.-членства — с «×»
+                     (форма удаления, no-JS fallback: POST на тот же путь
+                     ресурса /api/admin/users/{id}/teams/{team_id} +
+                     _method=DELETE + csrf; admin_memberships.js перехватывает,
+                     docs §4). super_admin/без команды → «без команды». #}
+                  {% if u.memberships %}
+                    <ul class="team-chips" data-team-chips>
+                      {% for mem in u.memberships %}
+                        {% set _is_home = (mem.id == _home_tid) %}
+                        <li class="team-chip {% if _is_home %}team-chip--home{% endif %}">
+                          <span class="team-chip__name">{{ mem.name | e }}</span>
+                          {% if _is_home %}
+                            <span class="visually-hidden">(домашняя команда)</span>
+                          {% else %}
+                            <form method="POST"
+                                  action="/api/admin/users/{{ u.id }}/teams/{{ mem.id }}"
+                                  class="inline-form team-chip__remove-form"
+                                  data-admin-remove-membership
+                                  data-user-id="{{ u.id }}"
+                                  data-team-id="{{ mem.id }}"
+                                  data-username="{{ u.username | e }}"
+                                  data-team-name="{{ mem.name | e }}">
+                              {{ m.csrf_input() }}
+                              <input type="hidden" name="_method" value="DELETE">
+                              <button type="submit" class="team-chip__remove"
+                                      title="Убрать из команды «{{ mem.name | e }}»"
+                                      aria-label="Убрать {{ u.username | e }} из команды «{{ mem.name | e }}»">&times;</button>
+                            </form>
+                          {% endif %}
+                        </li>
+                      {% endfor %}
+                    </ul>
+                  {% elif u.home_team %}
+                    {# Защитно: членства ещё не заполнены — показываем домашнюю
+                       команду без контрола удаления. #}
+                    <span class="team-chip team-chip--home"><span class="team-chip__name">{{ u.home_team.name | e }}</span></span>
+                  {% else %}
+                    <span class="admin-users-table__muted">без команды</span>
+                  {% endif %}
+                </td>
+                <td class="admin-users-table__date">
+                  {{ m.time_tag_short(u.created_at) }}
+                </td>
+                <td class="admin-users-table__date">
+                  {% if u.last_login_at %}
+                    {{ m.time_tag_short(u.last_login_at) }}
+                  {% else %}
+                    <span class="admin-users-table__muted">никогда</span>
+                  {% endif %}
+                </td>
+                <td class="admin-users-table__actions">
+                  {% if not _is_super %}
+                    <button type="button" class="btn btn--secondary btn--small"
+                            data-admin-reset
+                            data-user-id="{{ u.id }}"
+                            data-username="{{ u.username | e }}">Сброс</button>
+                    <button type="button" class="btn btn--danger btn--small"
+                            data-admin-delete
+                            data-user-id="{{ u.id }}"
+                            data-username="{{ u.username | e }}">Удалить</button>
+                  {% else %}
+                    <span class="admin-users-table__muted">системный</span>
+                  {% endif %}
+                </td>
+              </tr>
             {% endfor %}
           </tbody>
-        </table>
-      </div>
-      {% else %}
-      <div class="admin__empty admin__empty--inline" role="status">
-        <p>В команде пока нет участников.</p>
-      </div>
-      {% endif %}
-    </section>
-    {% endfor %}
+        {% endfor %}
+      </table>
+    </div>
+
+    {# Пагинация: base_url сохраняет q. #}
+    {{ m.page_pagination(page | default(1), total | default(0), limit | default(50), '/admin?' + ('q=' + (q | urlencode) + '&' if q else '')) }}
   {% endif %}
 
-  {# --- Секция «Нераспределённые номера» (docs §4a, §7) ------------------- #}
+  {# --- Секция «Нераспределённые номера» (docs §4a, §7; ADR-0009/0013) ---- #}
+  {# Легитимное sms-дополнение, сохраняется как есть (ADR-0015): sync из Twilio
+     + назначение команды номерам. #}
   <section class="admin__group admin-numbers"
            aria-labelledby="grp-numbers-title"
            data-numbers-section
@@ -292,7 +293,9 @@
     </div>
   </section>
 
-  {# --- Диалог создания пользователя (POST /api/admin/users) -------------- #}
+  {# --- Диалог создания пользователя (POST /api/admin/users, docs §4) ----- #}
+  {# sms-семантика: team_id обязателен; radio-выбора роли НЕТ (роль выводится
+     правилом «первый=лидер», ADR-0003/0012). #}
   <dialog class="dialog" id="dialog-create-user" data-admin-create-dialog>
     <form method="dialog" class="dialog__form-cancel">
       <button type="submit" class="btn btn--link" aria-label="Закрыть">&times;</button>
@@ -340,7 +343,7 @@
         </p>
         {% else %}
         <p class="field__hint">
-          Команд ещё нет. Сначала <a href="/admin/teams">создайте команду</a>.
+          Команд ещё нет. Сначала создайте команду кнопкой «Создать команду».
         </p>
         {% endif %}
       </div>
@@ -351,23 +354,69 @@
     </form>
   </dialog>
 
+  {# --- Диалог создания команды (упрощённый, POST /api/admin/teams, docs §5) - #}
+  {# Только поле name (§7): leader_user_id/member_ids НЕ портируются. Команда
+     создаётся orphan; лидер — по правилу «первый=лидер». #}
+  <dialog class="dialog" id="dialog-create-team" data-admin-create-team-dialog>
+    <form method="dialog" class="dialog__form-cancel">
+      <button type="submit" class="btn btn--link" aria-label="Закрыть">&times;</button>
+    </form>
+    <h2 class="dialog__title">Создать команду</h2>
+    <p class="form-error" role="alert" data-admin-create-team-error hidden></p>
+    <form class="form" data-admin-create-team-form>
+      <div class="field">
+        <label class="field__label" for="new-team-name">Название команды</label>
+        <input
+          class="field__input"
+          type="text"
+          id="new-team-name"
+          name="name"
+          required
+          minlength="1"
+          maxlength="100"
+          autocomplete="off">
+        <p class="field__hint">От 1 до 100 символов. Лидер назначится автоматически при добавлении первого участника.</p>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary" data-admin-create-team-submit>Создать</button>
+      </div>
+    </form>
+  </dialog>
+
+  {# --- Меню-диалог управления командами («+», docs §7) ------------------- #}
+  {# Открывается кнопкой «+». Два пункта → диалоги перевода / добавления.
+     «Переместить» задизейблено для лидера. Рендерится как <dialog> (top layer),
+     чтобы не обрезался overflow таблицы. #}
+  <dialog class="dialog dialog--menu" id="dialog-team-actions" data-admin-actions-dialog>
+    <form method="dialog" class="dialog__form-cancel">
+      <button type="submit" class="btn btn--link" aria-label="Закрыть">&times;</button>
+    </form>
+    <h2 class="dialog__title">Команды пользователя <span data-admin-actions-username></span></h2>
+    <div class="dialog__menu" role="group" aria-label="Действия с командами">
+      <button type="button" class="dialog__menu-item" data-admin-actions-move>
+        Переместить в другую команду
+      </button>
+      <p class="field__hint" data-admin-actions-move-disabled hidden>
+        Лидера команды нельзя перенести — доступно только добавление в команду.
+      </p>
+      <button type="button" class="dialog__menu-item" data-admin-actions-add>
+        Добавить в другую команду
+      </button>
+    </div>
+  </dialog>
+
   {# --- Диалог перевода в другую команду (PATCH /api/admin/users/{id}) ---- #}
   <dialog class="dialog" id="dialog-move-user" data-admin-move-dialog>
     <form method="dialog" class="dialog__form-cancel">
       <button type="submit" class="btn btn--link" aria-label="Закрыть">&times;</button>
     </form>
-    <h2 class="dialog__title">Перевести в другую команду</h2>
+    <h2 class="dialog__title">Перенести в команду</h2>
     <p>Пользователь <strong data-admin-move-username></strong></p>
     <p class="form-error" role="alert" data-admin-move-error hidden></p>
-    <p class="field__hint" data-admin-move-leader-note hidden>
-      Этот пользователь — лидер команды. Перевод возможен, только если он единственный участник,
-      иначе сначала назначьте другого лидера на странице «Команды».
-    </p>
     <form class="form" data-admin-move-form>
       <div class="field">
         <label class="field__label" for="move-user-team">Команда</label>
         <select class="field__input" id="move-user-team" name="team_id" required data-admin-move-select>
-          <option value="">— выберите команду —</option>
           {% for t in teams | default([]) %}
           <option value="{{ t.id }}">{{ t.name | e }}</option>
           {% endfor %}
@@ -375,7 +424,7 @@
       </div>
       <div class="form-actions">
         <button type="button" class="btn btn--secondary" data-admin-move-cancel>Отмена</button>
-        <button type="submit" class="btn btn--primary" data-admin-move-go>Перевести</button>
+        <button type="submit" class="btn btn--primary" data-admin-move-go>Перенести</button>
       </div>
     </form>
   </dialog>
@@ -396,7 +445,6 @@
       <div class="field" data-admin-add-field>
         <label class="field__label" for="add-team-select">Команда</label>
         <select class="field__input" id="add-team-select" name="team_id" required data-admin-add-select>
-          <option value="">— выберите команду —</option>
           {% for t in teams | default([]) %}
           <option value="{{ t.id }}">{{ t.name | e }}</option>
           {% endfor %}
@@ -409,7 +457,7 @@
     </form>
   </dialog>
 
-  {# --- Диалог удаления (подтверждение вводом логина) -------------------- #}
+  {# --- Диалог удаления (подтверждение вводом логина, DELETE .../users/{id}) - #}
   <dialog class="dialog" id="dialog-delete-user" data-admin-delete-dialog>
     <form method="dialog" class="dialog__form-cancel">
       <button type="submit" class="btn btn--link" aria-label="Закрыть">&times;</button>

@@ -45,3 +45,57 @@
 {%- else -%}{{ role | default('') | e }}
 {%- endif -%}
 {%- endmacro -%}
+
+{# Эффективное имя пользователя: display_name, иначе username.
+   Терпимо к dict-like объектам (SSR-контекст /admin — list[dict], docs/05 §7)
+   и к объектам с атрибутами. #}
+{%- macro effective_user_name(user) -%}
+{%- if user is mapping -%}
+{{- (user.get('display_name') or user.get('username') or '') | e -}}
+{%- else -%}
+{%- set dn = user.display_name if user is defined and user.display_name is defined else None -%}
+{%- set un = user.username if user is defined and user.username is defined else '' -%}
+{{- (dn if dn else un) | e -}}
+{%- endif -%}
+{%- endmacro -%}
+
+{# Компактная дата-время «YYYY-MM-DD HH:MM» в теге <time> с ISO в datetime
+   (для a11y / машинного чтения). Принимает и datetime-объекты, и ISO-строки;
+   пусто/None → ничего (вызывающий рендерит «никогда»/«—» сам). #}
+{%- macro time_tag_short(value) -%}
+{%- if value -%}
+{%- if value.strftime is defined -%}
+{%- set iso = value.isoformat() -%}
+{%- set short = value.strftime('%Y-%m-%d %H:%M') -%}
+{%- else -%}
+{%- set iso = value | string -%}
+{%- set s = iso | replace('T', ' ') -%}
+{%- set short = s[:16] -%}
+{%- endif -%}
+<time datetime="{{ iso | e }}">{{ short | e }}</time>
+{%- endif -%}
+{%- endmacro -%}
+
+{# Постраничная (page-based) пагинация. Рендерится только когда страниц > 1.
+   base_url уже содержит хвост запроса (например «/admin?q=foo&») — макрос лишь
+   дописывает page=N. Порт mail-agregator _macros.html. #}
+{%- macro page_pagination(page, total, limit, base_url) -%}
+{%- set total_pages = ((total // limit) + (1 if total % limit else 0)) if total else 1 -%}
+{%- if total_pages > 1 -%}
+<nav class="pagination" aria-label="Постраничная навигация">
+  {%- set prev_p = page - 1 -%}
+  {%- set next_p = page + 1 -%}
+  {%- if page > 1 -%}
+    <a class="pagination__link" rel="prev" href="{{ base_url | e }}page={{ prev_p }}">&larr; Назад</a>
+  {%- else -%}
+    <span class="pagination__link pagination__link--disabled" aria-disabled="true">&larr; Назад</span>
+  {%- endif -%}
+  <span class="pagination__info">Стр. {{ page }} из {{ total_pages }}</span>
+  {%- if page < total_pages -%}
+    <a class="pagination__link" rel="next" href="{{ base_url | e }}page={{ next_p }}">Далее &rarr;</a>
+  {%- else -%}
+    <span class="pagination__link pagination__link--disabled" aria-disabled="true">Далее &rarr;</span>
+  {%- endif -%}
+</nav>
+{%- endif -%}
+{%- endmacro -%}

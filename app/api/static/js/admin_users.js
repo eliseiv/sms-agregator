@@ -1,20 +1,22 @@
 /* =============================================================================
-   admin_users.js — страница /admin (docs/05 §4, §7).
+   admin_users.js — страница /admin (docs/05 §4, §5, §7; ADR-0015).
 
-   Данные пользователей рендерит СЕРВЕР (SSR-группировка: секция «Администраторы»
-   первой, затем секции по командам с лидером первым). Этот скрипт — только
-   прогрессивное улучшение: навешивает обработчики на SSR-элементы и выполняет
-   изменяющие запросы через SMS.csrfFetch (double-submit X-CSRF-Token):
+   Данные пользователей рендерит СЕРВЕР (единая таблица `admin-users-table` с
+   `<tbody>`-бандингом по командам; один пользователь = одна строка). Этот
+   скрипт — прогрессивное улучшение: навешивает обработчики на SSR-элементы и
+   выполняет изменяющие запросы через SMS.csrfFetch (double-submit X-CSRF-Token):
 
      - POST   /api/admin/users            {username, display_name, team_id}
+     - POST   /api/admin/teams            {name}
      - POST   /api/admin/users/{id}/reset
-     - PATCH  /api/admin/users/{id}       {team_id}
      - DELETE /api/admin/users/{id}
 
-   После успешной мутации страница перезагружается (location.reload) — так
-   серверная группировка (docs §7) остаётся единственным источником порядка,
-   без дублирования логики группировки в JS. Сообщение об успехе переносится
-   через sessionStorage и показывается после перезагрузки.
+   Управление командами пользователя («+»-меню: перевод / доп. членство /
+   удаление членства) — отдельный файл admin_memberships.js.
+
+   После успешной мутации страница перезагружается (location.reload) — серверная
+   группировка (docs §7) остаётся единственным источником порядка. Сообщение об
+   успехе переносится через sessionStorage и показывается после перезагрузки.
 
    CSP-безопасно: без inline-скриптов/onclick, DOM только через API,
    события только через addEventListener, пользовательские данные — textContent.
@@ -123,6 +125,49 @@
     });
   }
 
+  /* ---- создание команды (упрощённый диалог, docs §5/§7) ----------------- */
+
+  var createTeamBtn = document.querySelector('[data-admin-create-team]');
+  var createTeamDialog = document.querySelector('[data-admin-create-team-dialog]');
+  var createTeamForm = document.querySelector('[data-admin-create-team-form]');
+  var createTeamError = document.querySelector('[data-admin-create-team-error]');
+  var createTeamSubmit = document.querySelector('[data-admin-create-team-submit]');
+
+  if (createTeamBtn && createTeamDialog) {
+    createTeamBtn.addEventListener('click', function () {
+      showError(createTeamError, '');
+      if (createTeamForm) createTeamForm.reset();
+      openDialog(createTeamDialog);
+    });
+  }
+
+  if (createTeamForm) {
+    createTeamForm.addEventListener('submit', function (event) {
+      event.preventDefault();
+      showError(createTeamError, '');
+      var fd = new FormData(createTeamForm);
+      var name = (fd.get('name') || '').toString().trim();
+      if (!name) { showError(createTeamError, 'Укажите название команды.'); return; }
+
+      if (createTeamSubmit) createTeamSubmit.disabled = true;
+      SMS.csrfFetch('/api/admin/teams', { method: 'POST', body: { name: name } })
+        .then(function (resp) {
+          if (resp.ok) {
+            reloadWithFlash('Команда создана.', 'success');
+            return null;
+          }
+          return SMS.readJsonError(resp).then(function (e) {
+            showError(createTeamError, e.message);
+            if (createTeamSubmit) createTeamSubmit.disabled = false;
+          });
+        })
+        .catch(function () {
+          showError(createTeamError, 'Сетевая ошибка. Попробуйте ещё раз.');
+          if (createTeamSubmit) createTeamSubmit.disabled = false;
+        });
+    });
+  }
+
   /* ---- сброс пароля (делегирование) ------------------------------------- */
 
   document.addEventListener('click', function (event) {
@@ -149,66 +194,6 @@
         btn.disabled = false;
       });
   });
-
-  /* ---- перевод в другую команду ----------------------------------------- */
-
-  var moveDialog = document.querySelector('[data-admin-move-dialog]');
-  var moveForm = document.querySelector('[data-admin-move-form]');
-  var moveSelect = document.querySelector('[data-admin-move-select]');
-  var moveUsername = document.querySelector('[data-admin-move-username]');
-  var moveError = document.querySelector('[data-admin-move-error]');
-  var moveLeaderNote = document.querySelector('[data-admin-move-leader-note]');
-  var moveCancel = document.querySelector('[data-admin-move-cancel]');
-  var moveGo = document.querySelector('[data-admin-move-go]');
-  var pendingMove = null;
-
-  document.addEventListener('click', function (event) {
-    var btn = event.target.closest && event.target.closest('[data-admin-move]');
-    if (!btn || !moveDialog || !moveSelect) return;
-    var teamRaw = btn.getAttribute('data-team-id');
-    pendingMove = {
-      id: btn.getAttribute('data-user-id'),
-      username: btn.getAttribute('data-username') || '',
-      teamId: teamRaw ? parseInt(teamRaw, 10) : null,
-      isLeader: btn.getAttribute('data-is-leader') === '1'
-    };
-    showError(moveError, '');
-    if (moveUsername) moveUsername.textContent = pendingMove.username;
-    if (moveLeaderNote) moveLeaderNote.hidden = !pendingMove.isLeader;
-    // Предвыбрать текущую команду.
-    if (pendingMove.teamId) moveSelect.value = String(pendingMove.teamId);
-    else moveSelect.value = '';
-    openDialog(moveDialog);
-  });
-
-  if (moveCancel) moveCancel.addEventListener('click', function () { closeDialog(moveDialog); });
-
-  if (moveForm) {
-    moveForm.addEventListener('submit', function (event) {
-      event.preventDefault();
-      if (!pendingMove || !moveSelect) return;
-      showError(moveError, '');
-      var teamId = parseInt((moveSelect.value || '').toString(), 10);
-      if (!Number.isFinite(teamId) || teamId < 1) { showError(moveError, 'Выберите команду.'); return; }
-      if (teamId === pendingMove.teamId) { showError(moveError, 'Пользователь уже в этой команде.'); return; }
-      if (moveGo) moveGo.disabled = true;
-      SMS.csrfFetch('/api/admin/users/' + encodeURIComponent(pendingMove.id), { method: 'PATCH', body: { team_id: teamId } })
-        .then(function (resp) {
-          if (resp.ok) {
-            reloadWithFlash('Пользователь переведён в другую команду.', 'success');
-            return null;
-          }
-          return SMS.readJsonError(resp).then(function (e) {
-            showError(moveError, e.message);
-            if (moveGo) moveGo.disabled = false;
-          });
-        })
-        .catch(function () {
-          showError(moveError, 'Сетевая ошибка. Попробуйте ещё раз.');
-          if (moveGo) moveGo.disabled = false;
-        });
-    });
-  }
 
   /* ---- удаление (подтверждение логином) --------------------------------- */
 
@@ -253,7 +238,7 @@
       if (deleteGo) deleteGo.disabled = true;
       SMS.csrfFetch('/api/admin/users/' + encodeURIComponent(pendingDelete.id), { method: 'DELETE' })
         .then(function (resp) {
-          if (resp.ok) {
+          if (resp.ok || resp.status === 204) {
             reloadWithFlash('Пользователь удалён.', 'success');
             return null;
           }

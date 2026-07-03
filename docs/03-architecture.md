@@ -239,13 +239,13 @@ flowchart TD
 
 ## Подсветка команд на `/admin` (banding, UI-презентация)
 
-Секции команд на `/admin` визуально различаются чередующейся подсветкой (**banding**) — порт из mail-agregator (`static/css/main.css`, `templates/admin/users.html`). Это **чисто презентационный слой**, схема БД **не меняется** (поля `teams.color` нет):
+Команды на `/admin` визуально различаются чередующейся подсветкой (**banding**) — **порт из mail-agregator** (`backend/app/static/css/main.css`, `backend/app/templates/admin/users.html`). Модель — **единая таблица** `admin-users-table`, где каждая команда — это `<tbody>`-бакет (**не** отдельная `<section>`/`<table>` на команду), [ADR-0015](./adr/ADR-0015-admin-users-visual-parity-with-mail-agregator.md). Это **чисто презентационный слой**, схема БД **не меняется** (поля `teams.color` нет):
 
-- В `app/api/static/css/main.css` — классы-модификаторы `.admin__group--band-a` / `--band-b` (два чередующихся акцента) и `--no-team` (нейтральная секция «Администраторы»). Каждый задаёт CSS-переменные `--team-accent` (цвет рамки/полосы секции) и `--team-tint` (тонированный фон, ~8% альфа); применяются к блоку секции команды.
-- В `app/api/templates/admin/users.html` — класс банда чередуется по секциям `team_sections` (namespace-счётчик, как в референсе). Секция «Администраторы» — нейтральный `--no-team`.
-- **CSP-safe:** только CSS-классы, **без** inline-style (соответствует существующему подходу ролевых бейджей и CSP `script-src/style-src 'self'`). Отдельного API/данных не требуется — banding вычисляется в шаблоне из порядка `team_sections`.
+- В `app/api/static/css/main.css` — классы-модификаторы `.user-group--band-a` / `--band-b` (два чередующихся акцента) и `--no-group` (нейтральный бакет «без команды» / super_admin), а также `.user-group__spacer` (визуальный зазор-`<tbody>` между бакетами). Каждый банд задаёт цвет рамки/полосы и тонированный фон бакета.
+- В `app/api/templates/admin/users.html` — класс банда чередуется **по бакетам `user_groups`** (namespace-счётчик, как в референсе), только по командным бакетам; бакет «без команды» — нейтральный `--no-group` и рендерится первым.
+- **CSP-safe:** только CSS-классы, **без** inline-style (соответствует существующему подходу ролевых бейджей и CSP `script-src/style-src 'self'`). Отдельного API/данных не требуется — banding вычисляется в шаблоне из порядка `user_groups`.
 
-Контракт SSR-контекста `/admin` (набор `team_sections`, из которого строится banding) — [05-api-contracts.md](./05-api-contracts.md) §7. Отдельный ADR не заводится (UI-презентация, схема не затронута).
+Контракт SSR-контекста `/admin` (набор `user_groups`, из которого строится banding) + полный приёмочный чек-лист паритета — [05-api-contracts.md](./05-api-contracts.md) §7; решение о паритете — [ADR-0015](./adr/ADR-0015-admin-users-visual-parity-with-mail-agregator.md).
 
 ## On-demand sync номеров из Twilio (ADR-0013)
 

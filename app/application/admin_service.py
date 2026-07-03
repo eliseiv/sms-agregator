@@ -131,74 +131,103 @@ class AdminService:
         items.sort(key=_sort_key)
         return items
 
-    # --- Grouped dashboard (SSR /admin, §7) --------------------------------
+    # --- SSR /admin page context (§7, ADR-0015) ----------------------------
 
-    async def grouped_dashboard(self) -> dict[str, Any]:
-        """Предгруппированный контекст для SSR ``/admin`` (docs/05 §7, ADR-0012).
+    def _sort_key_user(self, user: User, teams: dict[int, Any]) -> tuple[Any, ...]:
+        """Контрактный порядок §4/§7: super_admin/без-команды первыми (по
+        username) → домашняя команда (``team_name ASC``, ``team_id ASC``) →
+        лидер первым (``is_leader DESC``) → ``username ASC``."""
+        if user.role == ROLE_SUPER_ADMIN:
+            return (0, "", 0, 0, user.username)
+        home = teams.get(user.team_id) if user.team_id is not None else None
+        is_home_leader = home is not None and home.leader_user_id == user.id
+        return (
+            1,
+            home.name if home is not None else "",
+            user.team_id or 0,
+            0 if is_home_leader else 1,
+            user.username,
+        )
 
-        Возвращает ``super_admins``, ``team_sections`` (по командам, лидер первым),
-        ``teams`` (для select) и ``unassigned_numbers`` (пул, ADR-0009). Согласовано
-        с ``list_users`` (те же поля + ``team_ids``), но представлено сгруппированно.
+    async def users_page(self, *, q: str, page: int, limit: int) -> dict[str, Any]:
+        """SSR-контекст ``/admin`` — паритет с mail-agregator (docs/05 §7, ADR-0015).
 
-        Multi-team (ADR-0012): пользователь с несколькими членствами попадает в
-        КАЖДУЮ свою ``team_section``. В домашней ``is_home=true`` (бейдж «домашняя»),
-        в доп. — ``is_home=false``. Лидер помечается ``is_leader=true`` только в
-        домашней команде. Группировка строится из bulk-членств ``user_teams``.
+        Строит ``user_groups`` — бакеты по ДОМАШНЕЙ команде пользователя (super_admin
+        — в бакете «без команды», ``team_id=None``, первым). Один пользователь = одна
+        запись в своём home-бакете; все его команды (home ∪ доп. из ``user_teams``)
+        отдаются в ``memberships`` для рендера чипов — БЕЗ дублирования строк.
+
+        Поиск (``q`` — по логину, case-insensitive substring) и пагинация
+        (``page``/``limit``) — на стороне сервиса: фильтрация → сортировка (§4) →
+        ``total`` по совпавшим → срез страницы → линейная группировка среза в бакеты.
+
+        Telegram-привязка на ``/admin`` не отображается (Q-ADMIN-1 «a», ADR-0015) —
+        ``has_telegram_link`` в контекст НЕ входит. Также инжектит ``teams`` (для
+        select-ов и вычисления команд-без-лидера) и ``unassigned_numbers`` (ADR-0009).
         """
         users = await self._users.list_all()
         teams_list = await self._teams.list_all()  # отсортированы по name
         teams = {t.id: t for t in teams_list}
-        active_link_user_ids = await self._links.users_with_active_link(
-            [u.id for u in users]
-        )
+
+        # Поиск по логину (username) — case-insensitive substring, на сервисе.
+        needle = q.strip().lower()
+        if needle:
+            users = [u for u in users if needle in u.username.lower()]
+
+        # Контрактный порядок (§4), затем пагинация по совпавшим.
+        users.sort(key=lambda u: self._sort_key_user(u, teams))
+        total = len(users)
+        start = (page - 1) * limit
+        page_users = users[start : start + limit]
+
+        # memberships (home ∪ доп.) — bulk только для пользователей страницы.
         memberships = await self._memberships.list_team_ids_for_users(
-            [u.id for u in users]
+            [u.id for u in page_users]
         )
 
-        super_admins: list[dict[str, Any]] = []
-        by_team: dict[int, list[dict[str, Any]]] = {}
-        for u in users:
-            home_team = teams.get(u.team_id) if u.team_id is not None else None
-            is_home_leader = home_team is not None and home_team.leader_user_id == u.id
-            user_team_ids = memberships.get(u.id, [])
-            base = self._user_item(
-                u,
-                team_name=home_team.name if home_team is not None else None,
-                is_leader=is_home_leader,
-                active_link_user_ids=active_link_user_ids,
-                team_ids=user_team_ids,
-            )
-            if u.role == ROLE_SUPER_ADMIN:
-                super_admins.append(base)
-                continue
-            # Пользователь попадает в каждую свою команду (home + доп.).
-            section_team_ids = set(user_team_ids)
+        user_groups: list[dict[str, Any]] = []
+        current_bucket: dict[str, Any] | None = None
+        current_key: int | None = None
+        for u in page_users:
+            home = teams.get(u.team_id) if u.team_id is not None else None
+            home_team = {"id": home.id, "name": home.name} if home is not None else None
+
+            # Все команды пользователя: home ∪ доп. (user_teams), только существующие.
+            mem_ids = set(memberships.get(u.id, []))
             if u.team_id is not None:
-                section_team_ids.add(u.team_id)
-            for tid in section_team_ids:
-                is_home = tid == u.team_id
-                member_item = {
-                    **base,
-                    "is_home": is_home,
-                    # Лидерство — только в домашней команде.
-                    "is_leader": is_home and is_home_leader,
-                }
-                by_team.setdefault(tid, []).append(member_item)
+                mem_ids.add(u.team_id)
+            membership_briefs: list[dict[str, Any]] = []
+            if home is not None:
+                membership_briefs.append({"id": home.id, "name": home.name})
+            extra = [teams[tid] for tid in mem_ids if tid != u.team_id and tid in teams]
+            extra.sort(key=lambda t: (t.name, t.id))
+            membership_briefs.extend({"id": t.id, "name": t.name} for t in extra)
 
-        super_admins.sort(key=lambda i: i["username"])
+            user_item: dict[str, Any] = {
+                "id": u.id,
+                "username": u.username,
+                "display_name": u.display_name,
+                "role": u.role,
+                "home_team": home_team,
+                "memberships": membership_briefs,
+                "created_at": u.created_at.isoformat(),
+                "last_login_at": u.last_login_at.isoformat()
+                if u.last_login_at
+                else None,
+                "password_reset_required": u.password_reset_required,
+            }
 
-        team_sections: list[dict[str, Any]] = []
-        for t in sorted(teams_list, key=lambda x: (x.name, x.id)):
-            members = by_team.get(t.id, [])
-            members.sort(key=lambda i: (0 if i["is_leader"] else 1, i["username"]))
-            team_sections.append(
-                {
-                    "team_id": t.id,
-                    "team_name": t.name,
-                    "leader_user_id": t.leader_user_id,
-                    "members": members,
+            # Линейная группировка: контиг. по home-команде (отсортировано выше).
+            bucket_key = u.team_id  # None → бакет «без команды» (super_admin)
+            if current_bucket is None or current_key != bucket_key:
+                current_key = bucket_key
+                current_bucket = {
+                    "team_id": bucket_key,
+                    "team_name": home.name if home is not None else None,
+                    "users": [],
                 }
-            )
+                user_groups.append(current_bucket)
+            current_bucket["users"].append(user_item)
 
         numbers_repo = PhoneNumberRepository(self._db)
         unassigned = await numbers_repo.list_filtered(
@@ -216,9 +245,15 @@ class AdminService:
         ]
 
         return {
-            "super_admins": super_admins,
-            "team_sections": team_sections,
-            "teams": [{"id": t.id, "name": t.name} for t in teams_list],
+            "user_groups": user_groups,
+            "teams": [
+                {"id": t.id, "name": t.name, "leader_user_id": t.leader_user_id}
+                for t in teams_list
+            ],
+            "q": q,
+            "total": total,
+            "page": page,
+            "limit": limit,
             "unassigned_numbers": unassigned_numbers,
         }
 

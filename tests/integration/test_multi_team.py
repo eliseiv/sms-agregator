@@ -506,6 +506,8 @@ async def test_admin_dashboard_banding_alternates(client):
     r = await client.get("/admin", cookies=cookies)
     assert r.status_code == 200
     body = r.text
-    assert "admin__group--band-a" in body
-    assert "admin__group--band-b" in body  # чередование
-    assert "admin__group--no-team" in body  # секция «Администраторы» нейтральна
+    # Новая разметка (ADR-0015): единая таблица с <tbody>-бандингом по командам.
+    assert "user-group--band-a" in body
+    assert "user-group--band-b" in body  # чередование по командным бакетам
+    assert "user-group--no-group" in body  # бакет super_admin («без команды»)
+    assert "user-group__spacer" in body  # зазор между бакетами

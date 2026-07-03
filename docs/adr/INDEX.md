@@ -18,6 +18,7 @@
 | [ADR-0012](./ADR-0012-multi-team-membership.md) | Multi-team: аддитивная M:N `user_teams` (home = `users.team_id`; амендит ADR-0003 §4, ADR-0005 §2; закрывает TD-003) | accepted | 2026-07-03 |
 | [ADR-0013](./ADR-0013-on-demand-twilio-number-sync.md) | On-demand синхронизация номеров из Twilio (как unassigned, без авто-назначения; переиспользует ADR-0009-пул) | accepted | 2026-07-03 |
 | [ADR-0014](./ADR-0014-sms-viewing-by-number-current-ownership-cursor-pagination.md) | Просмотр SMS по номерам: ролевой доступ по текущей принадлежности номера (`phone_numbers.team_id`, не снимок) + cursor keyset-пагинация | accepted | 2026-07-03 |
+| [ADR-0015](./ADR-0015-admin-users-visual-parity-with-mail-agregator.md) | Визуально-структурный паритет `/admin` (список пользователей) с референсом mail-agregator: единая таблица + `<tbody>`-banding + чипы команд; удаление колонки «Telegram» и секций-на-команду | accepted | 2026-07-04 |
 
 ## Как добавлять ADR
 
