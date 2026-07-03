@@ -54,4 +54,13 @@ class InboundSms(Base):
             "team_id",
             postgresql_where=text("team_id IS NOT NULL"),
         ),
+        # Листинг по номеру/набору номеров + keyset-пагинация просмотра SMS
+        # (ADR-0014, docs/04 §inbound_sms). Порядок совпадает с ORDER BY
+        # ``received_at DESC, id DESC`` в ``SmsRepository.list_inbound``.
+        Index(
+            "ix_inbound_sms_to_number_received",
+            text("to_number"),
+            text("received_at DESC"),
+            text("id DESC"),
+        ),
     )

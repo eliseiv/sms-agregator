@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+
+{# ---------------------------------------------------------------------------
+   messages.html — просмотр входящих SMS (docs/05 §9, ADR-0014). Единая страница
+   для всех ролей; различие — набор номеров селектора и правила видимости
+   (считаются на backend). Read-only: мутаций нет.
+
+   Backend (роут GET /messages) инжектит в контекст (docs/05 §9 «Инжект в
+   контекст»). Имена контекстных переменных ниже — нормативно-литеральные по
+   docs/05 §9 (to_number/team_id/limit и др. заданы как точные идентификаторы
+   Jinja-контекста), и backend передаёт их ровно так. Все обращения — защищены
+   ``is defined``/``default``, чтобы недостающая переменная не роняла рендер:
+     - messages    : list сериализованных SMS текущей страницы
+                     ({id, from_number, to_number, body, received_at, team_id});
+     - next_cursor : opaque-токен следующей страницы или null (forward-only);
+     - numbers     : набор номеров для селектора (ролевой GET /api/numbers)
+                     ({id, phone_number, team_id, team_name, label, is_active,...});
+     - teams       : список команд {id, name} для доп. фильтра super_admin;
+     - is_super_admin : bool — показывать ли селектор команды и фильтр team_id;
+     - to_number   : текущее значение фильтра номера (E.164) или пусто;
+     - team_id     : текущее значение фильтра команды (int) или пусто;
+     - limit       : размер страницы (дефолт 50);
+     - csrf_token/username/display_name — как на прочих страницах.
+
+   Прогрессивное обогащение: первая страница рендерится server-side и работает
+   БЕЗ JS (GET-форма фильтра + ссылка «Ещё» по cursor). messages.js
+   перехватывает «Ещё» → дозагрузка следующей страницы через GET /api/messages
+   без перезагрузки. CSP-safe: данные для JS — в <script type="application/json">,
+   без inline-обработчиков/стилей.
+   --------------------------------------------------------------------------- #}
+
+{%- set msg_list      = messages if (messages is defined and messages) else [] -%}
+{%- set msg_next      = next_cursor if (next_cursor is defined and next_cursor) else none -%}
+{%- set sel_numbers   = numbers if (numbers is defined and numbers) else [] -%}
+{%- set sel_teams     = teams if (teams is defined and teams) else [] -%}
+{%- set is_admin      = true if (is_super_admin is defined and is_super_admin) else false -%}
+{%- set cur_to        = to_number if (to_number is defined and to_number) else '' -%}
+{%- set cur_team      = team_id if (team_id is defined and team_id is not none and team_id != '') else '' -%}
+{%- set page_limit    = limit if (limit is defined and limit) else 50 -%}
+{%- set has_filters   = (cur_to != '') or (cur_team != '') -%}
+
+{# Карта id→имя команды для бейджей (снимок inbound_sms.team_id может отличаться
+   от текущей принадлежности — показываем имя, если резолвится, иначе «#id»).
+   Строим из teams (super_admin) и team_name номеров (участник) — покрывает обе
+   роли. Отдаётся и в JSON-остров для одинакового рендера в JS. #}
+{%- set _tn = namespace(pairs=[]) -%}
+{%- for t in sel_teams -%}
+  {%- if t.id is not none -%}{%- set _tn.pairs = _tn.pairs + [{'id': t.id, 'name': t.name}] -%}{%- endif -%}
+{%- endfor -%}
+{%- for n in sel_numbers -%}
+  {%- if n.team_id is not none and n.team_name -%}{%- set _tn.pairs = _tn.pairs + [{'id': n.team_id, 'name': n.team_name}] -%}{%- endif -%}
+{%- endfor -%}
+
+{%- macro team_badge(tid) -%}
+  {%- if tid is not none and tid != '' -%}
+    {%- set ns = namespace(name=none) -%}
+    {%- for p in _tn.pairs -%}{%- if ns.name is none and p.id == tid -%}{%- set ns.name = p.name -%}{%- endif -%}{%- endfor -%}
+    <span class="team-chip"><span class="team-chip__name">{{ (ns.name if ns.name else ('Команда #' ~ tid)) | e }}</span></span>
+  {%- endif -%}
+{%- endmacro -%}
+
+{% block title %}Сообщения &middot; SMS Агрегатор{% endblock %}
+{% block body_class %}messages{% endblock %}
+
+{% block content %}
+<section class="landing" aria-labelledby="messages-heading">
+  <header class="landing__header">
+    <h1 id="messages-heading" class="landing__title">Входящие SMS</h1>
+    <p class="landing__subtitle">
+      {% if is_admin %}
+        Все номера. Отфильтруйте по номеру или команде.
+      {% else %}
+        Сообщения номеров ваших команд. Отфильтруйте по конкретному номеру.
+      {% endif %}
+    </p>
+  </header>
+
+  {# --- Фильтр (no-JS GET-форма, method=GET action=/messages) --- #}
+  <form class="messages-filter" method="GET" action="/messages" aria-label="Фильтр сообщений">
+    <div class="field">
+      <label class="field__label" for="filter-number">Номер</label>
+      <select class="field__input" id="filter-number" name="to_number">
+        <option value="">Все номера</option>
+        {% for n in sel_numbers %}
+          <option value="{{ n.phone_number | e }}"{% if n.phone_number == cur_to %} selected{% endif %}>
+            {{ n.phone_number | e }}{% if n.label %} — {{ n.label | e }}{% endif %}{% if is_admin and n.team_name %} · {{ n.team_name | e }}{% endif %}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    {% if is_admin %}
+    <div class="field">
+      <label class="field__label" for="filter-team">Команда</label>
+      <select class="field__input" id="filter-team" name="team_id">
+        <option value="">Все команды</option>
+        {% for t in sel_teams %}
+          <option value="{{ t.id }}"{% if cur_team != '' and t.id == cur_team %} selected{% endif %}>{{ t.name | e }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+
+    <input type="hidden" name="limit" value="{{ page_limit }}">
+
+    <div class="messages-filter__actions">
+      <button type="submit" class="btn btn--primary">Показать</button>
+      {% if has_filters %}
+        <a class="btn btn--link" href="/messages">Сбросить</a>
+      {% endif %}
+    </div>
+  </form>
+
+  {# --- Список сообщений (SSR первой/запрошенной страницы) --- #}
+  <div class="messages__root" data-messages-root aria-live="polite">
+    {% if msg_list %}
+      <ul class="messages-list" data-messages-list>
+        {% for msg in msg_list %}
+          <li class="message-card" data-message-id="{{ msg.id | e }}">
+            <div class="message-card__head">
+              <span class="message-card__from">{{ msg.from_number | e }}</span>
+              <span class="message-card__arrow" aria-hidden="true">→</span>
+              <span class="message-card__to">{{ msg.to_number | e }}</span>
+              {{ team_badge(msg.team_id) }}
+              <time class="message-card__time" datetime="{{ msg.received_at | e }}" data-message-time>{{ msg.received_at | e }}</time>
+            </div>
+            <p class="message-card__body">{{ msg.body | e }}</p>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="admin__empty" data-messages-empty role="status">
+        <p>Сообщений нет.</p>
+        <p class="field__hint">
+          {% if has_filters %}
+            По выбранному фильтру входящих SMS не найдено. Измените фильтр или сбросьте его.
+          {% else %}
+            Входящих SMS пока нет. Они появятся здесь, как только придут на номера
+            {{ 'команд' if not is_admin else 'системы' }}.
+          {% endif %}
+        </p>
+      </div>
+    {% endif %}
+  </div>
+
+  {# --- «Ещё» (forward-only). no-JS: ссылка на следующую страницу по cursor;
+         messages.js перехватывает и дозагружает без перезагрузки. Рендерится
+         только когда next_cursor != null. --- #}
+  {% if msg_next %}
+    <div class="messages-more" data-messages-more-wrap>
+      <a class="btn btn--secondary" href="{{ request.url.include_query_params(cursor=msg_next) }}" data-messages-more rel="next">Ещё</a>
+    </div>
+  {% endif %}
+
+  {# --- Данные для JS (CSP-safe: JSON-остров, без inline-обработчиков) --- #}
+  <script type="application/json" data-messages-config>
+    {{ {
+      'nextCursor': msg_next,
+      'toNumber': cur_to,
+      'teamId': (cur_team if cur_team != '' else none),
+      'isSuperAdmin': is_admin,
+      'limit': page_limit,
+      'teamNames': _tn.pairs
+    } | tojson }}
+  </script>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/messages.js?v={{ static_v }}"></script>
+{% endblock %}

@@ -284,6 +284,44 @@ sequenceDiagram
 - **Реализация Twilio-клиента** (REST-клиент SDK, вынос синхронного вызова в executor, обработка пагинации/ошибок в `twilio_error`) — зона backend, детали — сверить с кодом проекта; ADR/архитектура фиксируют контракт и семантику, не внутренний метод.
 - Контракт endpoint — [05-api-contracts.md](./05-api-contracts.md) §4a; эксплуатация CLI `scripts/sync_twilio_numbers.py` — [07-deployment.md](./07-deployment.md).
 
+## Поток просмотра входящих SMS (ADR-0014)
+
+Read-only просмотр истории `inbound_sms` — единая страница `GET /messages` для всех ролей; JSON — `GET /api/messages`. Связь SMS↔номер: `inbound_sms.to_number = phone_numbers.phone_number`. Видимость участника — по **текущей** принадлежности номера (`phone_numbers.team_id`), не по снимку `inbound_sms.team_id` ([ADR-0014](./adr/ADR-0014-sms-viewing-by-number-current-ownership-cursor-pagination.md) §2).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as Пользователь (браузер / Mini App)
+    participant EP as GET /messages (SSR) / GET /api/messages (JSON)
+    participant SVC as MessageQuery (сервис)
+    participant DB as PostgreSQL
+
+    U->>EP: GET ?to_number&team_id&cursor&limit
+    EP->>EP: require_authenticated; build VisibilityScope (team_ids, ADR-0012)
+    EP->>SVC: list(scope, to_number?, team_id?, cursor?, limit)
+    SVC->>SVC: decode opaque cursor → (received_at0, id0) | битый → 400 invalid_cursor
+    SVC->>SVC: validate limit ∈ [1,100] | иначе 400 invalid_limit
+    alt super_admin
+        Note over SVC: без scope-фильтра; team_id → to_number ∈ (phone_numbers.team_id = :team_id); to_number → точное сравнение
+    else group_member / group_leader
+        Note over SVC: to_number ∈ (SELECT phone_number FROM phone_numbers WHERE team_id = ANY(scope.team_ids)); team_id игнор; to_number вне scope → пустой набор
+    end
+    SVC->>DB: SELECT ... WHERE <visibility> [AND keyset (received_at,id) < (r0,id0)] ORDER BY received_at DESC, id DESC LIMIT :limit+1
+    DB-->>SVC: rows (≤ limit+1)
+    SVC->>SVC: если rows > limit → отбросить лишнюю, next_cursor = позиция limit-й строки; иначе next_cursor = null
+    alt JSON
+        EP-->>U: 200 {messages:[serialize_message...], next_cursor}
+    else SSR
+        EP-->>U: 200 HTML (список + ссылка «Дальше» при next_cursor≠null; no-JS GET-форма фильтра)
+    end
+```
+
+- **Текущая принадлежность vs снимок (нормативно).** Scope участника строится по `phone_numbers.team_id` **на момент запроса**, а не по `inbound_sms.team_id`. Trade-off принят ([ADR-0014](./adr/ADR-0014-sms-viewing-by-number-current-ownership-cursor-pagination.md) §2): участник видит исторические SMS номера за период чужой принадлежности, если номер сейчас в его команде; обратной утечки нет (номер выпал из `team_ids` → SMS невидимы). `inbound_sms.team_id` для видимости не используется.
+- **Cursor keyset (нормативно).** Порядок `received_at DESC, id DESC`; `id` — tie-breaker. Курсор — opaque `base64url`, кодирует только позицию `(received_at, id)`; фильтры пересылаются клиентом. Приём `limit+1`, forward-only. Полный контракт — [05-api-contracts.md](./05-api-contracts.md) §9.
+- **Анти-энумерация.** Участник, запросивший `to_number` вне scope, получает пустой `200`, не `403`/`404`.
+- **Безопасность сериализации.** `raw_payload` не отдаётся; сериализуется безопасное подмножество полей ([05-api-contracts.md](./05-api-contracts.md) §9).
+- **Реализация запроса** (сервис `MessageQuery`, метод `SmsRepository`, кодек курсора) — зона backend; детали — сверить с кодом; архитектура фиксирует контракт и семантику.
+
 ## Что удаляется из текущего кода
 
 - `app/infrastructure/db.py` (sqlite `Database`, глобальный `db`), синхронные `Sqlite*Repository`.

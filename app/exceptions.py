@@ -116,6 +116,20 @@ class MembershipNotFoundError(ApiError):
     code = "membership_not_found"
 
 
+class InvalidCursorError(ApiError):
+    """Битый/недекодируемый opaque-курсор пагинации (ADR-0014, docs/05 §9)."""
+
+    status_code = 400
+    code = "invalid_cursor"
+
+
+class InvalidLimitError(ApiError):
+    """``limit`` вне диапазона ``[1, 100]`` (ADR-0014, docs/05 §9)."""
+
+    status_code = 400
+    code = "invalid_limit"
+
+
 class TelegramLinkLimitError(ApiError):
     status_code = 409
     code = "tg_link_limit"

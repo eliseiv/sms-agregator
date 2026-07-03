@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Protocol
 
 from app.domain.entities import Recipient
@@ -84,6 +85,14 @@ class SmsRepository(Protocol):
     ) -> InboundSms: ...
     async def get(self, sms_id: int) -> InboundSms | None: ...
     async def find_by_sid(self, sid: str) -> InboundSms | None: ...
+    async def list_inbound(
+        self,
+        *,
+        to_numbers: list[str] | None,
+        to_number: str | None,
+        cursor: tuple[datetime, int] | None,
+        limit: int,
+    ) -> list[InboundSms]: ...
 
 
 class DeliveryRepository(Protocol):

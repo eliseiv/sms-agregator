@@ -22,6 +22,8 @@ from app.api.routers.admin_numbers import router as admin_numbers_router
 from app.api.routers.admin_ui import router as admin_ui_router
 from app.api.routers.auth import router as auth_router
 from app.api.routers.landing import router as landing_router
+from app.api.routers.messages import page_router as messages_page_router
+from app.api.routers.messages import router as messages_router
 from app.api.routers.numbers import router as numbers_router
 from app.api.routers.telegram_auth import router as telegram_auth_router
 from app.api.routers.telegram_webhook import router as telegram_webhook_router
@@ -100,6 +102,8 @@ def create_app() -> FastAPI:
     app.include_router(admin_numbers_router)
     app.include_router(admin_ui_router)
     app.include_router(numbers_router)
+    app.include_router(messages_router)
+    app.include_router(messages_page_router)
     app.include_router(landing_router)
 
     @app.get("/health", response_model=HealthResponse, tags=["System"])

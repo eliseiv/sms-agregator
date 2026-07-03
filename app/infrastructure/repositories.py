@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import case, delete, func, select, text, update
+from sqlalchemy import and_, case, delete, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -589,6 +589,45 @@ class SmsRepository:
     async def find_by_sid(self, sid: str) -> InboundSms | None:
         stmt = select(InboundSms).where(InboundSms.twilio_message_sid == sid).limit(1)
         return (await self._s.execute(stmt)).scalar_one_or_none()
+
+    async def list_inbound(
+        self,
+        *,
+        to_numbers: list[str] | None,
+        to_number: str | None,
+        cursor: tuple[datetime, int] | None,
+        limit: int,
+    ) -> list[InboundSms]:
+        """Keyset-листинг ``inbound_sms`` для просмотра SMS (docs/05 §9, ADR-0014).
+
+        ``to_numbers`` — набор **видимых** номеров (``to_number IN (...)``):
+        ``None`` — без фильтра (super_admin, все SMS); пустой список — пустой
+        результат (без запроса). ``to_number`` — опциональный точный фильтр
+        (сужение/анти-энумерация: у участника число вне видимого набора не
+        совпадёт → пустой результат). ``cursor`` — позиция ``(received_at, id)``
+        для keyset-предиката ``(received_at, id) < (r0, id0)``. Сортировка
+        ``received_at DESC, id DESC``. ``limit`` вызывающий передаёт как
+        ``limit + 1`` для определения следующей страницы.
+        """
+        if to_numbers is not None and len(to_numbers) == 0:
+            return []
+        stmt = select(InboundSms)
+        if to_numbers is not None:
+            stmt = stmt.where(InboundSms.to_number.in_(to_numbers))
+        if to_number is not None:
+            stmt = stmt.where(InboundSms.to_number == to_number)
+        if cursor is not None:
+            r0, id0 = cursor
+            stmt = stmt.where(
+                or_(
+                    InboundSms.received_at < r0,
+                    and_(InboundSms.received_at == r0, InboundSms.id < id0),
+                )
+            )
+        stmt = stmt.order_by(InboundSms.received_at.desc(), InboundSms.id.desc()).limit(
+            limit
+        )
+        return list((await self._s.execute(stmt)).scalars().all())
 
 
 # --- Deliveries -------------------------------------------------------------

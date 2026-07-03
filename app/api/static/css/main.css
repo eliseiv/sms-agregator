@@ -775,6 +775,70 @@ body.tg-app .topbar__inner { padding: var(--space-2) var(--space-4); min-height:
 body.tg-app .main { padding: var(--space-3) var(--space-4); }
 body.tg-app .footer { display: none; }
 
+/* ---------- 11b. Messages (просмотр входящих SMS, docs §9, ADR-0014) ----- */
+.messages-filter {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-5);
+}
+.messages-filter .field { flex: 1 1 14rem; min-width: 0; }
+.messages-filter__actions { display: flex; align-items: center; gap: var(--space-3); }
+
+.messages-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.message-card {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.message-card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  font-size: var(--font-size-sm);
+}
+.message-card__from,
+.message-card__to {
+  font-family: var(--font-family-mono);
+  font-weight: 600;
+  color: var(--color-text);
+}
+.message-card__arrow { color: var(--color-text-muted); }
+.message-card__time {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.message-card__body {
+  margin: 0;
+  color: var(--color-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.messages-more { margin-top: var(--space-4); text-align: center; }
+
+@media (max-width: 640px) {
+  .messages-filter { flex-direction: column; align-items: stretch; }
+  .messages-filter .field { flex-basis: auto; }
+  .message-card__time { margin-left: 0; }
+}
+
 /* ---------- 12. Mobile --------------------------------------------------- */
 @media (max-width: 640px) {
   .topbar__inner { padding: var(--space-2) var(--space-4); gap: var(--space-2); }

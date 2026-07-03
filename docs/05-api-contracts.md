@@ -303,6 +303,9 @@
 ### `GET /admin/teams`
 - **Guard:** `require_admin`. Jinja2-страница: список команд, создание/переименование/удаление, состав и лидер.
 
+### `GET /messages` — просмотр входящих SMS (все роли)
+- **Guard:** `require_authenticated` (super_admin, group_leader, group_member). Read-only просмотр истории `inbound_sms` с ролевым селектором номеров и cursor-пагинацией. Полный контракт (видимость, no-JS fallback, курсор) — §9. Пункт «Сообщения» в шапке `base.html` — для всех аутентифицированных.
+
 Все SSR-страницы наследуют `base.html` (подключён `telegram-web-app.js` + `tg.js`, CSP `script-src 'self' https://telegram.org`).
 
 ### Инвариант достижимости landing (нормативно)
@@ -314,6 +317,62 @@
 
 ### `GET /health`
 - **Доступ:** публичный. **Ответ `200`:** `{"status": "ok", "service": "<SERVICE_NAME>"}`. Используется docker healthcheck и smoke.
+
+---
+
+## 9. Messages — просмотр входящих SMS ([ADR-0014](./adr/ADR-0014-sms-viewing-by-number-current-ownership-cursor-pagination.md))
+
+Read-only просмотр истории `inbound_sms`. Единая страница для всех ролей; различие — набор видимых номеров и правила фильтрации. Связь SMS↔номер — по `inbound_sms.to_number = phone_numbers.phone_number`. **Видимость участника — по ТЕКУЩЕЙ принадлежности номера (`phone_numbers.team_id`), а не по снимку `inbound_sms.team_id`** ([ADR-0014](./adr/ADR-0014-sms-viewing-by-number-current-ownership-cursor-pagination.md) §2). Мутаций нет (нет прочитанности/ответа/удаления).
+
+### Контракт cursor keyset-пагинации (нормативно; первый в проекте)
+
+Общий для §9 (и эталон для будущих листингов). Сортировка результата — **`received_at DESC, id DESC`** (`id` — детерминированный tie-breaker).
+
+- **`cursor`** — opaque `base64url`-токен (без padding), кодирующий **только позицию** — пару `(received_at, id)` последней отданной строки. Клиент его **не парсит и не конструирует**; передаёт как есть. Кодирование/декодирование — на сервере. Пустой/отсутствующий `cursor` → первая страница.
+- **Курсор не кодирует фильтры.** `to_number` / `team_id` / `limit` клиент **пересылает** при каждом запросе рядом с `cursor`. Сервер не связывает курсор с набором фильтров (смена фильтров со старым курсором → валидная, но семантически смешанная страница — ответственность клиента; ошибкой не считается).
+- **`limit`** — целое, **дефолт `50`**, диапазон **`[1, 100]`**. Вне диапазона → `400 invalid_limit`.
+- **Keyset-предикат** (страница после `(r0, id0)`): `received_at < :r0 OR (received_at = :r0 AND id < :id0)`.
+- **Определение следующей страницы:** сервер читает `limit + 1` строк; при `> limit` — лишняя отбрасывается, `next_cursor` = позиция limit-й (последней оставленной) строки. При `≤ limit` — `next_cursor = null` (страниц больше нет).
+- **Битый/недекодируемый курсор** → `400 invalid_cursor`.
+- **Forward-only:** «назад» не поддерживается; возврат к началу = запрос без `cursor`.
+
+### Сериализация SMS (`serialize_message`)
+
+Безопасное подмножество полей `inbound_sms`; **`raw_payload` не отдаётся** (может содержать служебные/чувствительные данные Twilio — [ADR-0014](./adr/ADR-0014-sms-viewing-by-number-current-ownership-cursor-pagination.md)):
+
+```
+{"id", "from_number", "to_number", "body", "received_at", "team_id"}
+```
+
+`team_id` — **снимок** команды на момент приёма (`inbound_sms.team_id`; исторический, для видимости не используется). `received_at` — ISO 8601 с таймзоной. Все имена — сверить с моделью `shared/models/inbound_sms.py` и кодом сериализатора.
+
+### `GET /api/messages`
+- **Guard:** `require_authenticated` (все роли).
+- **Query:** `to_number?: str` (E.164, точное сравнение с `inbound_sms.to_number`), `team_id?: int` (**учитывается только для super_admin**; у не-super_admin игнорируется), `cursor?: str` (opaque), `limit?: int` (дефолт 50, `[1,100]`).
+- **Видимость:**
+  - **super_admin** — все `inbound_sms` (включая SMS, чей `to_number` уже не сопоставлён ни с одним `phone_numbers`). `to_number` — фильтр по конкретному номеру. `team_id` — фильтр по **текущей** принадлежности номера: `to_number IN (SELECT phone_number FROM phone_numbers WHERE team_id = :team_id)`.
+  - **group_member / group_leader** — только SMS номеров **своих команд** (`VisibilityScope.team_ids`, [ADR-0012](./adr/ADR-0012-multi-team-membership.md)): `inbound_sms.to_number IN (SELECT phone_number FROM phone_numbers WHERE team_id = ANY(:scope_team_ids))`. Пустой `scope.team_ids` → пустой результат. `to_number` — сужение внутри видимого набора; если запрошенный `to_number` **вне** scope участника → **пустой результат `200`** (не `403`/`404` — анти-энумерация, [ADR-0014](./adr/ADR-0014-sms-viewing-by-number-current-ownership-cursor-pagination.md)). `team_id` игнорируется.
+- **Ответ `200`:** `{"messages": [<serialize_message>...], "next_cursor": "<opaque>" | null}`.
+- **Ошибки:** `400 {"error":"invalid_cursor"}` (битый курсор); `400 {"error":"invalid_limit"}` (`limit` вне `[1,100]`); `401` (нет сессии — через `NotAuthenticatedError handler`, JSON для `/api/*`).
+
+### `GET /messages` — SSR-страница просмотра SMS (все роли)
+- **Guard:** `require_authenticated`. Роли: **все аутентифицированные** (super_admin, group_leader, group_member). Пункт «Сообщения» в шапке (`base.html`) — для всех аутентифицированных.
+- **Логика:** SSR Jinja2-страница. Сервер рендерит **первую (или запрошенную по `cursor`) страницу SMS server-side**, применяя те же правила видимости/пагинации, что `GET /api/messages` (та же сервис-функция; `to_number`/`team_id`/`cursor`/`limit` читаются из query). Ролевой селектор:
+  - **super_admin** — селектор **всех** номеров (переиспользует ролевой `GET /api/numbers`, который для super_admin отдаёт все номера) + селектор команды (`teams`) для фильтра `team_id`.
+  - **group_member / group_leader** — селектор **своих** номеров (тот же набор, что `GET /api/numbers` для участника). Селектора команды нет; `team_id` для участника не применяется.
+- **no-JS fallback (обязателен):** фильтр — GET-форма (`method="GET" action="/messages"`) с `<select>` номера (для super_admin — ещё `<select>` команды) и submit; пагинация — обычная ссылка «Дальше» на `/messages?...&cursor=<next_cursor>` (форвардная, рендерится только когда `next_cursor != null`). Прогрессивное JS-обогащение (fetch к `GET /api/messages`) допустимо, но страница обязана работать без JS. Курсор в ссылках — тот же opaque-токен.
+- **SSR-контекст (НОРМАТИВНО; split-ownership: шаблон `app/api/templates/messages.html` авторит frontend, контекст рендера передаёт backend).** Backend **ОБЯЗАН** инжектировать в шаблон ровно следующие переменные **под этими ЛИТЕРАЛЬНЫМИ именами** (не `selected_*`, не иные варианты) — шаблон читает их именно так. Канонические имена совпадают с именами query-параметров (`to_number`, `team_id`, `limit`), чтобы preselect фильтров и JS-«Ещё» работали без переименований. Список — исчерпывающий; отсутствие любой из переменных или иное имя = функциональный дефект (теряется активный фильтр, JS-пагинация теряет фильтр). Структура элементов `messages`/`numbers` — по `app/api/serializers.py`:
+  - `messages: list[dict]` — сериализованные SMS текущей (или запрошенной по `cursor`) страницы через `serialize_message`; структура элемента — §9 «Сериализация SMS» (`{id, from_number, to_number, body, received_at, team_id}`, `raw_payload` не отдаётся). Порядок — `received_at DESC, id DESC`.
+  - `next_cursor: str | None` — opaque-курсор следующей страницы. Ссылка «Дальше» (`/messages?...&cursor=<next_cursor>`) рендерится **только при `next_cursor != null`** (forward-only).
+  - `numbers: list[dict]` — номера для `<select>` фильтра `to_number` через `serialize_number`; поля элемента: `{id, phone_number, team_id, team_name, label, is_active, added_by_user_id, created_at}` (`team_name` = `null` для unassigned). Набор: для super_admin — **все** номера; для участника — номера **его команд** (`VisibilityScope.team_ids`, [ADR-0012](./adr/ADR-0012-multi-team-membership.md)); пустой при пустом scope.
+  - `teams: list[{id, name}]` — команды для `<select>` фильтра `team_id`. **Только для super_admin** (сортировка по `name`); для участника — **пустой список** (селектор команды не рендерится). Семантически это набор, отличный от `teams` в §7 (`/admin`, `/app`), — здесь фильтр по текущей принадлежности номера.
+  - `is_super_admin: bool` — рендерить ли селектор команды и фильтр `team_id`.
+  - `to_number: str | None` — **ТЕКУЩЕЕ** значение фильтра номера (E.164) для preselect `<select name="to_number">`, либо `None`. Имя литеральное — **не** `selected_to_number`.
+  - `team_id: int | None` — **ТЕКУЩЕЕ** значение фильтра команды (для preselect `<select name="team_id">`); **только super_admin** (backend передаёт `team_id if is_super_admin else None`, поэтому у не-super_admin всегда `None`). Имя литеральное — **не** `selected_team_id`.
+  - `limit: int` — текущий размер страницы (**дефолт `50`**, диапазон `[1,100]`; рендерится в скрытое поле формы `<input name="limit">` и подставляется в JS-запрос «Ещё»). **Обязателен**: backend **должен** передавать `limit` в контекст (ранее отсутствовал — без него no-JS форма и JS-пагинация теряют размер страницы).
+  - `csrf_token: str`, `username: str`, `display_name: str | None` — как на прочих SSR-страницах (§7). `display_name` nullable (`users.display_name` — `Mapped[str | None]`; backend передаёт `user.display_name` напрямую, значение может быть `null`).
+- Мутаций страница не выполняет (read-only) — POST-форм, кроме logout из `base.html`, нет.
+- **Ответ:** `200` (SSR HTML) для всех ролей; `302 → /login` при отсутствии сессии. Битый `cursor` в query → страница показывает пустой список / сообщение (или `400`) — конкретика UX на усмотрение frontend; API-семантика `invalid_cursor` — выше.
 
 ---
 
@@ -335,8 +394,10 @@
 | `/api/admin/teams*` | GET/POST/PATCH/DELETE | `require_admin` | да |
 | `/api/admin/teams/{id}/leader` | PATCH | `require_admin` | да |
 | `/api/numbers*` | GET/POST/DELETE | `require_authenticated` | да |
+| `/api/messages` | GET | `require_authenticated` (read-only) | — (GET) |
 | `/` | GET | публичный (диспетчер: 302 по роли/на `/login`) | — |
 | `/app` | GET | `require_authenticated` (member/leader; super_admin → 302 `/admin`) | — |
+| `/messages` | GET | `require_authenticated` (все роли) | — |
 | `/admin`, `/admin/teams` | GET | `require_admin` | — |
 | `/health` | GET | публичный | — |
 
@@ -361,6 +422,8 @@
 | `user_is_leader` / `leader_move_forbidden` | 409 | `DELETE`/`PATCH /api/admin/users/{id}` | Лидер команды с другими **домашними** участниками (`users.team_id`, HOME-семантика; доп.-участники не блокируют) — сначала переназначить лидера. |
 | `team_has_members` | 409 | `DELETE /api/admin/teams/{id}` | Команда не пуста **по home** (есть `users.team_id = id`; доп.-членства не блокируют роспуск — [ADR-0012](./adr/ADR-0012-multi-team-membership.md) §5/§6). |
 | `user_not_in_team` | 400 | `PATCH /api/admin/teams/{id}/leader` | Кандидат в лидеры — не участник команды. |
+| `invalid_cursor` | 400 | `GET /api/messages` | Битый/недекодируемый opaque-курсор пагинации ([ADR-0014](./adr/ADR-0014-sms-viewing-by-number-current-ownership-cursor-pagination.md)). |
+| `invalid_limit` | 400 | `GET /api/messages` | `limit` вне диапазона `[1,100]`. |
 | `phone_number_taken` | 409 | `POST /api/numbers` | Номер уже привязан. |
 | `forbidden` | 403 | `/api/numbers*` | Участник обращается к чужой команде. |
 | `invalid_query` | 400 | `GET /api/admin/numbers` | Несовместимые фильтры (`team_id` + `assignment=unassigned`). |

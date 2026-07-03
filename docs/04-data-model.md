@@ -233,14 +233,20 @@ erDiagram
 | `from_number` | TEXT | NOT NULL | Нормализованный отправитель. |
 | `to_number` | TEXT | NOT NULL | Нормализованный получатель (наш номер). |
 | `body` | TEXT | NOT NULL | Текст SMS. |
-| `team_id` | BIGINT | NULL, FK → `teams(id)` ON DELETE SET NULL | Команда по номеру-получателю. NULL — неизвестный номер (SMS сохраняется, но не доставляется). |
-| `raw_payload` | JSONB | NOT NULL | Полный form-payload webhook (было `raw_payload_json TEXT`). |
-| `received_at` | TIMESTAMPTZ | NOT NULL | Время приёма. |
+| `team_id` | BIGINT | NULL, FK → `teams(id)` ON DELETE SET NULL | Команда по номеру-получателю **на момент приёма** (снимок). NULL — неизвестный/unassigned номер (SMS сохраняется, но не доставляется). **Для видимости в просмотре SMS не используется** — см. заметку ниже ([ADR-0014](./adr/ADR-0014-sms-viewing-by-number-current-ownership-cursor-pagination.md)). |
+| `raw_payload` | JSONB | NOT NULL | Полный form-payload webhook (было `raw_payload_json TEXT`). **Не сериализуется** в API просмотра SMS ([05-api-contracts.md](./05-api-contracts.md) §9). |
+| `received_at` | TIMESTAMPTZ | NOT NULL | Время приёма. Первичный ключ сортировки просмотра SMS (`received_at DESC, id DESC`). |
 | `created_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | |
 
 **Constraints:** partial-UNIQUE `(twilio_message_sid) WHERE twilio_message_sid IS NOT NULL` (`inbound_sms_sid_uq`) — дедупликация ретраев webhook. NULL-SID (ручные/тестовые) не конфликтуют.
 
-**Индексы:** partial-UNIQUE выше; `INDEX (received_at DESC)`; `INDEX (team_id) WHERE team_id IS NOT NULL`.
+**Индексы:** partial-UNIQUE выше; `INDEX (received_at DESC)` (`ix_inbound_sms_received_at`) — глобальный листинг super_admin без фильтра по номеру; `INDEX (team_id) WHERE team_id IS NOT NULL`; **`INDEX (to_number, received_at DESC, id DESC)` (`ix_inbound_sms_to_number_received`) — фильтрация по номеру/набору номеров + keyset-пагинация просмотра SMS ([ADR-0014](./adr/ADR-0014-sms-viewing-by-number-current-ownership-cursor-pagination.md); добавляется Alembic-миграцией этой доработки).**
+
+**Доступ в просмотре SMS (нормативно, [ADR-0014](./adr/ADR-0014-sms-viewing-by-number-current-ownership-cursor-pagination.md)).** Видимость участника (`GET /api/messages`, `GET /messages`) определяется **текущей** принадлежностью номера — `phone_numbers.team_id ∈ VisibilityScope.team_ids`, — а **не** снимком `inbound_sms.team_id`. Чтение `inbound_sms` — сопоставлением `inbound_sms.to_number = phone_numbers.phone_number`:
+```
+inbound_sms.to_number IN (SELECT phone_number FROM phone_numbers WHERE team_id = ANY(:scope_team_ids))
+```
+super_admin видит все `inbound_sms` (включая SMS, чей `to_number` уже не сопоставим ни с одним `phone_numbers`). Снимок `inbound_sms.team_id` остаётся только историческим аудитом момента приёма. Keyset-порядок `(received_at DESC, id DESC)`; контракт курсора — [05-api-contracts.md](./05-api-contracts.md) §9.
 
 ---
 

@@ -63,7 +63,10 @@
     invalid_query: 'Недопустимая комбинация фильтров.',
     // twilio sync (docs/05 §4a, ADR-0013)
     twilio_error: 'Ошибка Twilio, попробуйте позже.',
-    twilio_not_configured: 'Twilio не настроен.'
+    twilio_not_configured: 'Twilio не настроен.',
+    // messages / cursor-пагинация (docs/05 §9, ADR-0014)
+    invalid_cursor: 'Ссылка на страницу устарела. Обновите страницу и начните сначала.',
+    invalid_limit: 'Недопустимый размер страницы (допустимо 1–100).'
   };
 
   function errorText(code, fallback) {

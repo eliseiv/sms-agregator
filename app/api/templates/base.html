@@ -28,12 +28,16 @@
 
       {% if request is defined and request.state is defined and request.state.session %}
         {% import "_macros.html" as m with context %}
-        {% if request.state.session.role == 'super_admin' %}
-          <nav class="topnav" aria-label="Основное меню">
+        <nav class="topnav" aria-label="Основное меню">
+          {% if request.state.session.role == 'super_admin' %}
             <a class="topnav__link{% if request.url.path == '/admin' %} topnav__link--active{% endif %}" href="/admin">Пользователи</a>
             <a class="topnav__link{% if request.url.path.startswith('/admin/teams') %} topnav__link--active{% endif %}" href="/admin/teams">Команды</a>
-          </nav>
-        {% endif %}
+          {% else %}
+            <a class="topnav__link{% if request.url.path == '/app' %} topnav__link--active{% endif %}" href="/app">Мои номера</a>
+          {% endif %}
+          {# «Сообщения» — для всех аутентифицированных ролей (docs/05 §9, ADR-0014). #}
+          <a class="topnav__link{% if request.url.path == '/messages' %} topnav__link--active{% endif %}" href="/messages">Сообщения</a>
+        </nav>
         <div class="topbar__user">
           <span class="topbar__username" title="Текущий пользователь">
             {{ request.state.session.username | default('') | e }}
