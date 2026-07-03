@@ -56,6 +56,12 @@ class UpdateUserRequest(BaseModel):
     display_name: str | None = Field(None, max_length=100)
 
 
+class AddMembershipRequest(BaseModel):
+    """Тело ``POST /api/admin/users/{id}/teams`` (доп. членство, ADR-0012)."""
+
+    team_id: int
+
+
 # --- Admin: teams -----------------------------------------------------------
 
 

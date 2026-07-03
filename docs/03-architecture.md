@@ -25,12 +25,12 @@ flowchart LR
 shared/                      # переносимый инфраструктурный слой
   config.py                  # pydantic-settings Settings
   db.py                      # Base(DeclarativeBase), init_engine(role), get_session, make_session, dispose_engine
-  models/                    # SQLAlchemy-модели: teams, users, telegram_links, phone_numbers,
-                             #   inbound_sms, deliveries, admin_audit, service_state
+  models/                    # SQLAlchemy-модели: teams, users, user_teams (M:N членство, ADR-0012),
+                             #   telegram_links, phone_numbers, inbound_sms, deliveries, admin_audit, service_state
 migrations/                  # Alembic (env.py async, versions/)
 app/
   api/
-    deps.py                  # DbSession, current_session/current_user, VisibilityScope, guards
+    deps.py                  # DbSession, current_session/current_user, VisibilityScope (team_ids — ADR-0012), guards
     cookies.py, csrf.py      # cookie-хелперы, CSRF double-submit
     middlewares.py           # CSRF, MethodOverride, Session, SecurityHeaders, RequestID
     templates.py             # Jinja2 env
@@ -41,7 +41,7 @@ app/
       auth.py                # /login, /login/password, /set-password, /logout
       telegram_auth.py       # POST /api/telegram/auth (Mini App SSO)
       telegram_webhook.py    # POST /api/telegram/webhook (только /start → web_app-кнопка; секрет-токен) — ADR-0010
-      admin.py               # /api/admin/users, /api/admin/numbers (list/allocate — ADR-0009), /api/admin/teams, /api/admin/teams/{id}/leader (set_leader)
+      admin.py               # /api/admin/users (+ /users/{id}/teams add/remove членства — ADR-0012), /api/admin/numbers (list/allocate — ADR-0009), /api/admin/teams, /api/admin/teams/{id}/leader (set_leader)
       admin_ui.py            # GET /admin, /admin/teams (SSR)
       landing.py             # GET / (диспетчер по роли), GET /app (SSR landing участника/лидера) — ADR-0008
       numbers.py             # /api/numbers CRUD
@@ -56,7 +56,8 @@ app/
     entities.py              # Team, User, Recipient, PhoneNumber, InboundSms, Delivery, TelegramLink
     repositories.py          # async-протоколы репозиториев
   infrastructure/
-    repositories.py          # реализации на AsyncSession
+    repositories.py          # реализации на AsyncSession (в т.ч. UserTeamRepository — членство, ADR-0012;
+                             #   recipients_for_team/member-счётчики читают user_teams)
     sessions.py              # SessionStore + SetupSessionStore (Redis)
     rate_limit.py            # счётчики попыток/лимитов (Redis)
     redis_client.py          # redis.asyncio singleton
@@ -106,6 +107,18 @@ async with session.begin():                   # чистый write-блок
 
 Паттерн уже применён в `app/api/deps.py::current_user`, `app/application/services.py` (`handle_incoming_sms`, `retry_pending_deliveries`), `app/api/routers/numbers.py`. Исполнители обязаны следовать ему во всех местах, где read-SELECT предшествует `session.begin()` (первопричина устранённого класса бага — см. [100-known-tech-debt.md](./100-known-tech-debt.md)).
 
+### Multi-team: членство, scope и адресация (нормативно, [ADR-0012](./adr/ADR-0012-multi-team-membership.md))
+
+Аддитивная M:N `user_teams` — источник истины членства. `users.team_id` остаётся **домашней** командой (инвариант лидера, «первый=лидер», дефолт команды при добавлении номера).
+
+- **`VisibilityScope.team_ids: frozenset[int]`.** Помимо домашней команды, scope несёт **множество** всех команд участника (home ∪ доп. членства). Построение scope (`current_scope`/`build_scope` в `deps.py`) читает `UserTeamRepository.list_team_ids_for_user(user_id)`. `super_admin` → `team_ids` пуст (видит всё вне scope-фильтра). Read-SELECT членств выполняется в autobegin read-транзакции — её обязательно закрыть `await session.commit()` перед последующим write-блоком (паттерн «Работа с транзакциями и autobegin» выше).
+- **Адресация SMS.** `recipients_for_team(team_id)` фильтрует участников через `EXISTS/JOIN user_teams` (`ut.user_id = users.id AND ut.team_id = :team_id`) + живую `telegram_links` — вместо `users.team_id = :team_id`. Участник нескольких команд получает SMS каждой своей команды; `handle_incoming_sms` не меняется.
+- **Видимость номеров в `/app` и `GET /api/numbers` (участник).** Фильтр — `phone_numbers.team_id = ANY(scope.team_ids)` (номера всех своих команд), а не только домашней. Добавление номера (`POST /api/numbers`) — `team_id` обязан ∈ `scope.team_ids` (участник выбирает команду из своих; иначе `403 forbidden`); при отсутствии выбора дефолт — домашняя команда.
+- **Ревокация сессий при изменении членства.** Любая мутация членства (add/remove/move home) вызывает `SessionStore.revoke_all_for_user(target_user_id)` — иначе `team_ids` в активной сессии останется stale и участник увидит устаревший набор команд. После ревокации scope перечитывается при следующем входе.
+- **Две разные семантики счёта — не смешивать.** Membership-семантика читает `user_teams` (home ∪ доп.), home-семантика читает `users.team_id`. Выбор зависит от назначения: отображение/адресация → membership; guard инварианта лидера → home.
+  - **Membership-счётчики/списки** (`member_counts`, `list_by_team`, `list_user_ids_in_team`, `count_in_team`) читают `user_teams` — **включают** доп.-участников. Назначение: **ОТОБРАЖЕНИЕ** (`grouped_dashboard`, чипы/бейджи состава на `/admin` и `/app`) и **АДРЕСАЦИЯ SMS** (`recipients_for_team`, ревок доп.-членов при удалении команды — [ADR-0012](./adr/ADR-0012-multi-team-membership.md) §6). Здесь доп.-участник другой home-команды **обязан** учитываться.
+  - **Guard'ы ИНВАРИАНТА лидера** (лидер непустой команды в `delete_user`/move-`team` [05 §4](./05-api-contracts.md), disband-gate `DELETE /api/admin/teams/{id}` [05 §5](./05-api-contracts.md)) используют **HOME-семантику** — `count_home_members` (`users.team_id == team`), **НЕ** membership-счётчики. Инвариант роль↔team и лидерство привязаны к home (`users.team_id`, [ADR-0003](./adr/ADR-0003-roles-and-teams.md) §6, [ADR-0012](./adr/ADR-0012-multi-team-membership.md) §5), поэтому доп.-участник другой home-команды **НЕ** блокирует удаление/перенос лидера и **НЕ** участвует в disband-gate (gate = home-пустота, [05 §5](./05-api-contracts.md)). Применение membership-счётчика к этим guard'ам — дефект (ложный `409 user_is_leader`/`leader_move_forbidden`/`team_has_members`).
+
 ## Поток приёма и рассылки SMS
 
 ```mermaid
@@ -132,7 +145,7 @@ sequenceDiagram
     alt team_id IS NULL (неизвестный ИЛИ unassigned номер)
         SVC->>SVC: warning; SMS сохранён, доставок нет
     else team_id найден (и для нового, и для дубликата)
-            SVC->>DB: UserRepository.recipients_for_team(team_id)  (join telegram_links dead_at IS NULL)
+            SVC->>DB: UserRepository.recipients_for_team(team_id)  (JOIN user_teams членство + telegram_links dead_at IS NULL — ADR-0012)
             loop каждый получатель (user_id, telegram_user_id)
                 SVC->>DB: DeliveryRepository.try_reserve(inbound_sms_id, user_id, telegram_user_id)
                 Note over SVC,DB: pg_insert ON CONFLICT(inbound_sms_id, telegram_user_id) DO NOTHING RETURNING id
@@ -217,11 +230,21 @@ flowchart TD
     Root["GET /"] -->|нет sms_session| Login["302 → /login"]
     Root -->|role = super_admin| Admin["302 → /admin (200)"]
     Root -->|role = group_leader / group_member| App["302 → /app (200)"]
-    AppPage["GET /app (SSR)"] -->|member/leader| Render["200: номера команды + статус TG-привязки + add/delete + logout"]
+    AppPage["GET /app (SSR)"] -->|member/leader| Render["200: номера ВСЕХ своих команд (группировка) + селектор команды + статус TG-привязки + add/delete + logout"]
     AppPage -->|super_admin| Admin
 ```
 
-`GET /app` — SSR-страница участника/лидера: сервер инжектирует в контекст номера своей команды (scope `current_user.team_id`), статус собственной Telegram-привязки (`telegram_links`, `dead_at IS NULL`) и `csrf_token`; мутации (add/delete номера) идут через существующие `/api/numbers` (`app.js` + `csrf.js`). Отдельного API для статуса привязки не вводится — данные SSR-инжектятся. Контракты — [05-api-contracts.md](./05-api-contracts.md) §7.
+`GET /app` — SSR-страница участника/лидера: сервер инжектирует в контекст номера **всех** своих команд (scope `team_ids`, [ADR-0012](./adr/ADR-0012-multi-team-membership.md)), сгруппированные по командам, + селектор команды в форме добавления (только свои команды), статус собственной Telegram-привязки (`telegram_links`, `dead_at IS NULL`) и `csrf_token`; мутации (add/delete номера) идут через существующие `/api/numbers` (`app.js` + `csrf.js`). Отдельного API для статуса привязки не вводится — данные SSR-инжектятся. Контракты — [05-api-contracts.md](./05-api-contracts.md) §7.
+
+## Подсветка команд на `/admin` (banding, UI-презентация)
+
+Секции команд на `/admin` визуально различаются чередующейся подсветкой (**banding**) — порт из mail-agregator (`static/css/main.css`, `templates/admin/users.html`). Это **чисто презентационный слой**, схема БД **не меняется** (поля `teams.color` нет):
+
+- В `app/api/static/css/main.css` — классы-модификаторы `.admin__group--band-a` / `--band-b` (два чередующихся акцента) и `--no-team` (нейтральная секция «Администраторы»). Каждый задаёт CSS-переменные `--team-accent` (цвет рамки/полосы секции) и `--team-tint` (тонированный фон, ~8% альфа); применяются к блоку секции команды.
+- В `app/api/templates/admin/users.html` — класс банда чередуется по секциям `team_sections` (namespace-счётчик, как в референсе). Секция «Администраторы» — нейтральный `--no-team`.
+- **CSP-safe:** только CSS-классы, **без** inline-style (соответствует существующему подходу ролевых бейджей и CSP `script-src/style-src 'self'`). Отдельного API/данных не требуется — banding вычисляется в шаблоне из порядка `team_sections`.
+
+Контракт SSR-контекста `/admin` (набор `team_sections`, из которого строится banding) — [05-api-contracts.md](./05-api-contracts.md) §7. Отдельный ADR не заводится (UI-презентация, схема не затронута).
 
 ## Что удаляется из текущего кода
 

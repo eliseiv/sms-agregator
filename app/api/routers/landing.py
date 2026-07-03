@@ -51,28 +51,63 @@ async def app_landing(
     scope: CurrentScope,
     sess: CurrentSession,
 ) -> Response:
-    """SSR-landing участника/лидера. super_admin (без команды) → 302 ``/admin``."""
+    """SSR-landing участника/лидера. super_admin (без команды) → 302 ``/admin``.
+
+    Multi-team (ADR-0012): scope = ``team_ids`` (все команды участника). Сервер
+    инжектит номера ВСЕХ своих команд, сгруппированные по командам, + список
+    команд ``teams`` для селектора в форме добавления.
+    """
     if scope.is_super_admin or scope.team_id is None:
         return RedirectResponse(url="/admin", status_code=status.HTTP_302_FOUND)
 
-    team_id = scope.team_id
+    home_team_id = scope.team_id
     numbers_repo = PhoneNumberRepository(db)
     teams_repo = TeamRepository(db)
     links_repo = TelegramLinkRepository(db)
 
-    numbers = await numbers_repo.list_by_team(team_id)
-    team = await teams_repo.get(team_id)
+    numbers = await numbers_repo.list_by_teams(scope.team_ids)
+    all_teams = {t.id: t for t in await teams_repo.list_all()}
     has_telegram_link = await links_repo.count_active_by_user_id(user.id) > 0
 
-    team_name = team.name if team is not None else None
+    # Команды участника для селектора (home первой), отсортированы по имени.
+    scope_team_ids = scope.team_ids
+    teams = [
+        {"id": tid, "name": all_teams[tid].name, "is_home": tid == home_team_id}
+        for tid in sorted(
+            scope_team_ids, key=lambda tid: (tid != home_team_id, all_teams[tid].name)
+        )
+        if tid in all_teams
+    ]
+
+    def _team_name(tid: int | None) -> str | None:
+        team = all_teams.get(tid) if tid is not None else None
+        return team.name if team is not None else None
+
+    serialized = [serialize_number(n, _team_name(n.team_id)) for n in numbers]
+
+    # Номера, сгруппированные по командам (порядок как в ``teams``).
+    numbers_by_team = [
+        {
+            "team_id": t["id"],
+            "team_name": t["name"],
+            "is_home": t["is_home"],
+            "numbers": [n for n in serialized if n["team_id"] == t["id"]],
+        }
+        for t in teams
+    ]
+
+    home_team_name = _team_name(home_team_id)
     context: dict[str, Any] = {
         "csrf_token": sess.csrf_token,
         "user_id": user.id,
         "username": user.username,
         "display_name": user.display_name,
-        "team_id": team_id,
-        "team_name": team_name,
+        "team_id": home_team_id,
+        "team_name": home_team_name,
+        "teams": teams,
         "has_telegram_link": has_telegram_link,
-        "numbers": [serialize_number(n, team_name) for n in numbers],
+        # Плоский список (все команды) — обратная совместимость с текущим шаблоном.
+        "numbers": serialized,
+        "numbers_by_team": numbers_by_team,
     }
     return await render(request, "app.html", context)

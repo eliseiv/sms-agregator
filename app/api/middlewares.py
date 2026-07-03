@@ -105,6 +105,9 @@ _OVERRIDE_EXACT_PATHS: frozenset[str] = frozenset(
 )
 _OVERRIDE_REGEX_PATHS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^/api/admin/users/\d+$"),  # PATCH / DELETE override
+    re.compile(
+        r"^/api/admin/users/\d+/teams/\d+$"
+    ),  # DELETE override (членство, ADR-0012)
     re.compile(r"^/api/admin/teams/\d+$"),  # PATCH / DELETE override
     re.compile(r"^/api/admin/teams/\d+/leader$"),  # PATCH override
     re.compile(r"^/api/admin/numbers/\d+$"),  # PATCH override (назначение команды)

@@ -4,24 +4,31 @@
 {# =============================================================================
    /admin — пользователи (SSR-группировка) + распределение unassigned-номеров.
 
-   Источник истины: docs/05-api-contracts §7 (SSR-контекст), §4/§4a (API).
-   Backend предгруппирует данные в Python и инжектирует в контекст:
+   Источник истины: docs/05-api-contracts §7 (SSR-контекст), §4/§4a (API),
+   ADR-0012 (multi-team). Backend предгруппирует данные в Python и инжектирует:
      - super_admins: list[{id, username, display_name, role, created_at,
                             last_login_at, has_telegram_link}]
      - team_sections: list[{team_id, team_name, leader_user_id, members: [
                             {id, username, display_name, role, is_leader,
-                             has_telegram_link, password_reset_required,
-                             created_at, last_login_at}]}]
-     - teams: list[{id, name}]  — для select создания/перевода/назначения
+                             is_home, team_ids, has_telegram_link,
+                             password_reset_required, created_at,
+                             last_login_at}]}]
+       Multi-team (ADR-0012): пользователь попадает в КАЖДУЮ свою team_section;
+       в домашней команде is_home=true (бейдж «домашняя»), в доп. командах —
+       is_home=false (доступна кнопка «Убрать из команды»). team_ids — все
+       команды пользователя (для исключения уже занятых в диалоге «+ команда»).
+     - teams: list[{id, name}]  — для select создания/перевода/членства/назначения
      - unassigned_numbers: list[{id, phone_number, label, is_active, created_at}]
      - csrf_token, is_super_admin
 
-   Секция «Администраторы» рендерится ПЕРВОЙ, затем секции по командам
-   (внутри — лидер первым, помечен бейджем «Лидер»).
+   Секция «Администраторы» рендерится ПЕРВОЙ (нейтральный banding --no-team),
+   затем секции по командам с чередующейся подсветкой --band-a / --band-b
+   (namespace-счётчик, docs/03 §«Подсветка команд»); внутри — лидер первым.
 
    Действия (create / reset / move / delete) — JS-диалоги через SMS.csrfFetch
-   (double-submit X-CSRF-Token), обработчики в admin_users.js. Назначение
-   команды номеру — форма с _method=PATCH (no-JS fallback, docs §7),
+   (double-submit X-CSRF-Token), обработчики в admin_users.js. Членство
+   (add/remove доп. команды, POST/DELETE .../teams) — admin_memberships.js.
+   Назначение команды номеру — форма с _method=PATCH (no-JS fallback, docs §7),
    перехват + AJAX в admin_numbers.js.
    ========================================================================== #}
 
@@ -55,7 +62,7 @@
 
     {# --- Секция «Администраторы» (первая, docs §7) ----------------------- #}
     {% if super_admins %}
-    <section class="admin__group" aria-labelledby="grp-admins-title">
+    <section class="admin__group admin__group--no-team" aria-labelledby="grp-admins-title">
       <div class="admin__group-head">
         <h2 id="grp-admins-title" class="admin__group-title">Администраторы</h2>
         <span class="admin__group-count">{{ super_admins | length }}</span>
@@ -97,9 +104,14 @@
     </section>
     {% endif %}
 
-    {# --- Секции по командам (лидер первым, помечен) ---------------------- #}
+    {# --- Секции по командам (лидер первым; banding --band-a/--band-b) ----- #}
+    {# Подсветка команд (docs/03 §«Подсветка команд»): banding-класс чередуется
+       по секциям через namespace-счётчик. CSP-safe — только CSS-классы. #}
+    {% set band = namespace(value=0) %}
     {% for sec in team_sections %}
-    <section class="admin__group" aria-labelledby="grp-team-{{ sec.team_id }}-title">
+    {% set _band_class = 'admin__group--band-a' if band.value == 0 else 'admin__group--band-b' %}
+    {% set band.value = 1 - band.value %}
+    <section class="admin__group {{ _band_class }}" aria-labelledby="grp-team-{{ sec.team_id }}-title">
       <div class="admin__group-head">
         <h2 id="grp-team-{{ sec.team_id }}-title" class="admin__group-title">{{ sec.team_name | e }}</h2>
         <span class="admin__group-count">{{ sec.members | length }} участник(ов)</span>
@@ -120,9 +132,17 @@
           <tbody>
             {% for u in sec.members %}
             {% set _role = 'group_leader' if u.is_leader else (u.role or 'group_member') %}
+            {# is_home: домашняя команда пользователя (default true — при
+               ещё-не-обновлённом backend пользователь показан только в home). #}
+            {% set _is_home = u.is_home if u.is_home is defined else true %}
             <tr class="admin-users-table__row">
               <td class="admin-users-table__name">
                 {{ user_name(u) }}
+                {% if _is_home %}
+                  <span class="admin-user__badge admin-user__badge--home" title="Домашняя (первичная) команда">домашняя</span>
+                {% else %}
+                  <span class="admin-user__badge admin-user__badge--extra" title="Дополнительное членство">доп.</span>
+                {% endif %}
                 {% if u.password_reset_required %}
                   <span class="admin-user__badge admin-user__badge--warn" title="Пароль ещё не задан">ждёт пароль</span>
                 {% endif %}
@@ -138,20 +158,48 @@
                 {% if u.has_telegram_link %}<span class="admin-user__badge admin-user__badge--group_leader">привязан</span>{% else %}<span class="admin-users-table__muted">—</span>{% endif %}
               </td>
               <td class="admin-users-table__actions">
-                <button type="button" class="btn btn--secondary btn--small"
-                        data-admin-reset
+                {% if _is_home %}
+                  {# Глобальные действия и «+ команда» — только в домашней секции,
+                     чтобы не дублировать их в каждой доп. команде. #}
+                  <button type="button" class="btn btn--secondary btn--small"
+                          data-admin-reset
+                          data-user-id="{{ u.id }}"
+                          data-username="{{ u.username | e }}">Сброс</button>
+                  <button type="button" class="btn btn--secondary btn--small"
+                          data-admin-move
+                          data-user-id="{{ u.id }}"
+                          data-username="{{ u.username | e }}"
+                          data-team-id="{{ sec.team_id }}"
+                          data-is-leader="{{ '1' if u.is_leader else '0' }}">Перевести</button>
+                  <button type="button" class="btn btn--secondary btn--small"
+                          data-admin-add-team
+                          data-user-id="{{ u.id }}"
+                          data-username="{{ u.username | e }}"
+                          data-member-team-ids="{{ (u.team_ids | default([])) | tojson | e }}">+ команда</button>
+                  <button type="button" class="btn btn--danger btn--small"
+                          data-admin-delete
+                          data-user-id="{{ u.id }}"
+                          data-username="{{ u.username | e }}">Удалить</button>
+                {% else %}
+                  {# Доп. членство — «Убрать из команды». No-JS fallback: POST на
+                     ТОТ ЖЕ путь ресурса /api/admin/users/{id}/teams/{team_id} +
+                     _method=DELETE (docs §4; MethodOverride whitelist
+                     ^/api/admin/users/\d+/teams/\d+$). admin_memberships.js
+                     перехватывает submit. #}
+                  <form class="inline-form"
+                        method="POST"
+                        action="/api/admin/users/{{ u.id }}/teams/{{ sec.team_id }}"
+                        data-admin-remove-membership
                         data-user-id="{{ u.id }}"
-                        data-username="{{ u.username | e }}">Сброс</button>
-                <button type="button" class="btn btn--secondary btn--small"
-                        data-admin-move
-                        data-user-id="{{ u.id }}"
-                        data-username="{{ u.username | e }}"
                         data-team-id="{{ sec.team_id }}"
-                        data-is-leader="{{ '1' if u.is_leader else '0' }}">Перевести</button>
-                <button type="button" class="btn btn--danger btn--small"
-                        data-admin-delete
-                        data-user-id="{{ u.id }}"
-                        data-username="{{ u.username | e }}">Удалить</button>
+                        data-username="{{ u.username | e }}"
+                        data-team-name="{{ sec.team_name | e }}">
+                    {{ m.csrf_input() }}
+                    <input type="hidden" name="_method" value="DELETE">
+                    <button type="submit" class="btn btn--danger btn--small"
+                            aria-label="Убрать {{ u.username | e }} из команды {{ sec.team_name | e }}">Убрать из команды</button>
+                  </form>
+                {% endif %}
               </td>
             </tr>
             {% endfor %}
@@ -325,6 +373,35 @@
     </form>
   </dialog>
 
+  {# --- Диалог добавления доп. членства (POST /api/admin/users/{id}/teams) -- #}
+  <dialog class="dialog" id="dialog-add-team" data-admin-add-dialog>
+    <form method="dialog" class="dialog__form-cancel">
+      <button type="submit" class="btn btn--link" aria-label="Закрыть">&times;</button>
+    </form>
+    <h2 class="dialog__title">Добавить в команду</h2>
+    <p>Пользователь <strong data-admin-add-username></strong> будет добавлен в выбранную команду
+       дополнительно к домашней. Он начнёт видеть номера и получать SMS этой команды.</p>
+    <p class="form-error" role="alert" data-admin-add-error hidden></p>
+    <p class="field__hint" data-admin-add-empty hidden>
+      Пользователь уже состоит во всех доступных командах.
+    </p>
+    <form class="form" data-admin-add-form>
+      <div class="field" data-admin-add-field>
+        <label class="field__label" for="add-team-select">Команда</label>
+        <select class="field__input" id="add-team-select" name="team_id" required data-admin-add-select>
+          <option value="">— выберите команду —</option>
+          {% for t in teams | default([]) %}
+          <option value="{{ t.id }}">{{ t.name | e }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn--secondary" data-admin-add-cancel>Отмена</button>
+        <button type="submit" class="btn btn--primary" data-admin-add-go>Добавить</button>
+      </div>
+    </form>
+  </dialog>
+
   {# --- Диалог удаления (подтверждение вводом логина) -------------------- #}
   <dialog class="dialog" id="dialog-delete-user" data-admin-delete-dialog>
     <form method="dialog" class="dialog__form-cancel">
@@ -350,5 +427,6 @@
 
 {% block extra_js %}
 <script src="/static/js/admin_users.js?v={{ static_v }}"></script>
+<script src="/static/js/admin_memberships.js?v={{ static_v }}"></script>
 <script src="/static/js/admin_numbers.js?v={{ static_v }}"></script>
 {% endblock %}

@@ -88,6 +88,34 @@ class RateLimitedError(ApiError):
     code = "rate_limited"
 
 
+class CannotAddSuperAdminToTeamError(ApiError):
+    """Нельзя добавить super_admin в команду (ADR-0012)."""
+
+    status_code = 400
+    code = "cannot_add_super_admin_to_team"
+
+
+class MembershipAlreadyExistsError(ApiError):
+    """Пользователь уже состоит в этой команде (ADR-0012)."""
+
+    status_code = 409
+    code = "membership_already_exists"
+
+
+class CannotRemoveHomeMembershipError(ApiError):
+    """Нельзя убрать домашнюю команду через membership-API (ADR-0012)."""
+
+    status_code = 400
+    code = "cannot_remove_home_membership"
+
+
+class MembershipNotFoundError(ApiError):
+    """Такого доп. членства нет (ADR-0012)."""
+
+    status_code = 404
+    code = "membership_not_found"
+
+
 class TelegramLinkLimitError(ApiError):
     status_code = 409
     code = "tg_link_limit"

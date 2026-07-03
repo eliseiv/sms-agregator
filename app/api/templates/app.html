@@ -1,25 +1,32 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
 
-{# SSR-landing участника/лидера (docs/05 §7, ADR-0008). Backend (landing.py)
-   инжектит в контекст:
-     - username, display_name, team_name, team_id, user_id;
+{# SSR-landing участника/лидера (docs/05 §7, ADR-0008, multi-team ADR-0012).
+   Backend (landing.py) инжектит в контекст:
+     - username, display_name, team_id, team_name, user_id;
+     - teams[] — {id, name} ВСЕ команды участника (home ∪ доп. членства) —
+       для группировки и селектора команды в форме добавления (ADR-0012);
      - has_telegram_link (bool) — активная telegram_links текущего user;
-     - numbers[] — тот же набор, что GET /api/numbers для участника:
+     - numbers[] — номера ВСЕХ своих команд (тот же набор, что GET /api/numbers):
        {id, phone_number, team_id, team_name, label, is_active,
         added_by_user_id, created_at};
      - csrf_token — для double-submit (мутации /api/numbers, logout).
 
+   Multi-team: номера ГРУППИРУЮТСЯ по командам; форма «Добавить номер» имеет
+   СЕЛЕКТОР команды (из своих команд), team_id уходит в POST /api/numbers.
    Мутации (add/delete) и refresh идут через существующие /api/numbers
    (app.js + csrf.js, X-CSRF-Token из cookie sms_csrf). Нового API нет.
-   Список номеров рендерится server-side (первый экран + работа без JS для
-   просмотра), app.js перехватывает управление: refresh после мутаций,
-   состояния loading / empty / error / success.
+   Список рендерится server-side (первый экран + работа без JS), app.js
+   перехватывает: refresh после мутаций, состояния loading/empty/error/success.
 
    Logout — в topbar base.html (POST /logout + CSRF), как на страницах админки;
    отдельную кнопку тут не дублируем.
    CSP: никаких inline-скриптов/обработчиков/стилей — вся логика в app.js
    через addEventListener. #}
+
+{# Список команд для группировки/селектора: backend отдаёт teams[]; при
+   ещё-не-обновлённом backend — деривация из домашней (team_id/team_name). #}
+{%- set app_teams = teams if (teams is defined and teams) else ([{'id': team_id, 'name': team_name}] if team_id is defined and team_id else []) -%}
 
 {% block title %}Мои номера &middot; SMS Агрегатор{% endblock %}
 {% block body_class %}app-landing{% endblock %}
@@ -30,12 +37,17 @@
     <h1 id="landing-heading" class="landing__title">
       Здравствуйте{% if display_name or username %}, <strong>{{ (display_name or username) | e }}</strong>{% endif %}
     </h1>
-    {% if team_name %}
+    {% if app_teams %}
       <p class="landing__subtitle">
-        Команда:
-        <span class="team-chip team-chip--home">
-          <span class="team-chip__name">{{ team_name | e }}</span>
-        </span>
+        {{ 'Команды:' if app_teams | length > 1 else 'Команда:' }}
+        {% for t in app_teams %}
+          <span class="team-chip {% if t.id == team_id %}team-chip--home{% endif %}">
+            <span class="team-chip__name">{{ t.name | e }}</span>
+            {% if t.id == team_id and app_teams | length > 1 %}
+              <span class="visually-hidden">(домашняя команда)</span>
+            {% endif %}
+          </span>
+        {% endfor %}
       </p>
     {% endif %}
   </header>
@@ -58,38 +70,77 @@
     {% endif %}
   </section>
 
-  {# --- Список номеров команды --- #}
+  {# --- Номера, сгруппированные по командам (ADR-0012) --- #}
   <section class="numbers" aria-labelledby="numbers-heading">
     <div class="landing__section-head">
-      <h2 id="numbers-heading" class="landing__section-title">Номера команды</h2>
+      <h2 id="numbers-heading" class="landing__section-title">
+        {{ 'Номера ваших команд' if app_teams | length > 1 else 'Номера команды' }}
+      </h2>
     </div>
 
-    {# app.js рендерит сюда состояния loading / error / empty / success.
-       SSR-рендер ниже — первый экран и просмотр без JS. #}
-    <div class="numbers__root" data-numbers-root aria-live="polite">
-      {% if numbers and numbers | length %}
+    {# app.js перерисовывает [data-numbers-root]: loading/error/empty/success,
+       группировка по командам. SSR ниже — первый экран и просмотр без JS.
+       data-teams — источник команд для группировки/пустых групп в app.js. #}
+    <div class="numbers__root"
+         data-numbers-root
+         data-teams='{{ app_teams | tojson }}'
+         aria-live="polite">
+      {% set _has_numbers = numbers and numbers | length %}
+      {% if _has_numbers and app_teams %}
+        {% for t in app_teams %}
+          {% set _tnums = (numbers | selectattr('team_id', 'equalto', t.id) | list) %}
+          <section class="numbers-group" data-numbers-group data-team-id="{{ t.id }}">
+            <h3 class="numbers-group__title">{{ t.name | e }}</h3>
+            {% if _tnums %}
+              <ul class="numbers-list">
+                {% for n in _tnums %}
+                  <li class="number-card" data-number-id="{{ n.id | e }}">
+                    <div class="number-card__main">
+                      <span class="number-card__phone">{{ n.phone_number | e }}</span>
+                      {% if n.label %}
+                        <span class="number-card__label">{{ n.label | e }}</span>
+                      {% endif %}
+                    </div>
+                    <div class="number-card__meta">
+                      <span class="admin-user__badge admin-user__badge--{{ 'group_leader' if n.is_active else 'group_member' }}">
+                        {{ 'Активен' if n.is_active else 'Неактивен' }}
+                      </span>
+                      <button
+                        type="button"
+                        class="btn btn--danger btn--small"
+                        data-number-delete
+                        data-number-id="{{ n.id | e }}"
+                        data-number-phone="{{ n.phone_number | e }}"
+                        aria-label="Удалить номер {{ n.phone_number | e }}">
+                        Удалить
+                      </button>
+                    </div>
+                  </li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <p class="numbers-group__empty field__hint">В этой команде пока нет номеров.</p>
+            {% endif %}
+          </section>
+        {% endfor %}
+      {% elif _has_numbers %}
+        {# Fallback без app_teams: плоский список (backend не отдал teams). #}
         <ul class="numbers-list" data-numbers-list>
           {% for n in numbers %}
             <li class="number-card" data-number-id="{{ n.id | e }}">
               <div class="number-card__main">
                 <span class="number-card__phone">{{ n.phone_number | e }}</span>
-                {% if n.label %}
-                  <span class="number-card__label">{{ n.label | e }}</span>
-                {% endif %}
+                {% if n.label %}<span class="number-card__label">{{ n.label | e }}</span>{% endif %}
               </div>
               <div class="number-card__meta">
                 <span class="admin-user__badge admin-user__badge--{{ 'group_leader' if n.is_active else 'group_member' }}">
                   {{ 'Активен' if n.is_active else 'Неактивен' }}
                 </span>
-                <button
-                  type="button"
-                  class="btn btn--danger btn--small"
-                  data-number-delete
-                  data-number-id="{{ n.id | e }}"
-                  data-number-phone="{{ n.phone_number | e }}"
-                  aria-label="Удалить номер {{ n.phone_number | e }}">
-                  Удалить
-                </button>
+                <button type="button" class="btn btn--danger btn--small"
+                        data-number-delete
+                        data-number-id="{{ n.id | e }}"
+                        data-number-phone="{{ n.phone_number | e }}"
+                        aria-label="Удалить номер {{ n.phone_number | e }}">Удалить</button>
               </div>
             </li>
           {% endfor %}
@@ -97,7 +148,7 @@
       {% else %}
         <div class="admin__empty" data-numbers-empty role="status">
           <p>Пока нет номеров.</p>
-          <p class="field__hint">Добавьте первый номер команды в форме ниже.</p>
+          <p class="field__hint">Добавьте первый номер {{ 'одной из ваших команд' if app_teams | length > 1 else 'команды' }} в форме ниже.</p>
         </div>
       {% endif %}
     </div>
@@ -108,6 +159,22 @@
     <h2 id="add-number-heading" class="landing__section-title">Добавить номер</h2>
     <p class="form-error" role="alert" data-add-error hidden></p>
     <form class="form add-number__form" data-add-number-form novalidate>
+      {% if app_teams | length > 1 %}
+      <div class="field">
+        <label class="field__label" for="add-team">Команда</label>
+        <select class="field__input" id="add-team" name="team_id" required data-add-team aria-describedby="add-team-hint">
+          <option value="">— выберите команду —</option>
+          {% for t in app_teams %}
+          <option value="{{ t.id }}">{{ t.name | e }}</option>
+          {% endfor %}
+        </select>
+        <p class="field__hint" id="add-team-hint">Номер добавится в выбранную команду — SMS с него получат её участники.</p>
+      </div>
+      {% elif app_teams | length == 1 %}
+      {# Единственная команда — она же дефолт; передаём team_id скрытым полем. #}
+      <input type="hidden" name="team_id" value="{{ app_teams[0].id }}" data-add-team>
+      {% endif %}
+
       <div class="field">
         <label class="field__label" for="add-phone">Номер телефона</label>
         <input

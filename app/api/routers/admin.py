@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 
 from app.api.deps import DbSession, require_admin
 from app.api.schemas import (
+    AddMembershipRequest,
     CreateTeamRequest,
     CreateUserRequest,
     RenameTeamRequest,
@@ -130,6 +131,41 @@ async def update_user(user_id: int, request: Request, db: DbSession) -> JSONResp
             "team_id": user.team_id,
         }
     )
+
+
+# --- Доп. членство (ADR-0012) -----------------------------------------------
+
+
+@router.post("/users/{user_id}/teams")
+async def add_membership(user_id: int, request: Request, db: DbSession) -> JSONResponse:
+    body = await _read_body(request)
+    payload = AddMembershipRequest.model_validate(body)
+    ip, ua = _client(request)
+    async with db.begin():
+        result = await AdminService(db).add_membership(
+            actor_user_id=_actor_id(request),
+            target_id=user_id,
+            team_id=payload.team_id,
+            ip=ip,
+            user_agent=ua,
+        )
+    return JSONResponse(status_code=201, content=result)
+
+
+@router.delete("/users/{user_id}/teams/{team_id}")
+async def remove_membership(
+    user_id: int, team_id: int, request: Request, db: DbSession
+) -> Response:
+    ip, ua = _client(request)
+    async with db.begin():
+        await AdminService(db).remove_membership(
+            actor_user_id=_actor_id(request),
+            target_id=user_id,
+            team_id=team_id,
+            ip=ip,
+            user_agent=ua,
+        )
+    return Response(status_code=204)
 
 
 # --- Teams ------------------------------------------------------------------

@@ -15,12 +15,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.audit import AuditWriter
 from app.application.teams_service import TeamsService
 from app.application.telegram_sso_service import TelegramSSOService
-from app.exceptions import ApiError, ConflictError, NotFoundError
+from app.exceptions import (
+    ApiError,
+    CannotAddSuperAdminToTeamError,
+    CannotRemoveHomeMembershipError,
+    ConflictError,
+    MembershipAlreadyExistsError,
+    MembershipNotFoundError,
+    NotFoundError,
+)
 from app.infrastructure.repositories import (
     PhoneNumberRepository,
     TeamRepository,
     TelegramLinkRepository,
     UserRepository,
+    UserTeamRepository,
 )
 from app.infrastructure.sessions import SessionStore
 from shared.logging import get_logger
@@ -46,6 +55,7 @@ class AdminService:
         self._users = UserRepository(session)
         self._teams = TeamRepository(session)
         self._links = TelegramLinkRepository(session)
+        self._memberships = UserTeamRepository(session)
         self._audit = AuditWriter(session)
         self._sessions = SessionStore()
 
@@ -58,6 +68,7 @@ class AdminService:
         team_name: str | None,
         is_leader: bool,
         active_link_user_ids: set[int],
+        team_ids: list[int],
     ) -> dict[str, Any]:
         return {
             "id": user.id,
@@ -67,6 +78,8 @@ class AdminService:
             "team_id": user.team_id,
             "team_name": team_name,
             "is_leader": is_leader,
+            # ADR-0012: все команды пользователя (home + доп.) из user_teams.
+            "team_ids": team_ids,
             "password_reset_required": user.password_reset_required,
             "has_telegram_link": user.id in active_link_user_ids,
             "created_at": user.created_at.isoformat(),
@@ -86,6 +99,9 @@ class AdminService:
         active_link_user_ids = await self._links.users_with_active_link(
             [u.id for u in users]
         )
+        memberships = await self._memberships.list_team_ids_for_users(
+            [u.id for u in users]
+        )
         items: list[dict[str, Any]] = []
         for u in users:
             team = teams.get(u.team_id) if u.team_id is not None else None
@@ -96,6 +112,7 @@ class AdminService:
                     team_name=team.name if team is not None else None,
                     is_leader=is_leader,
                     active_link_user_ids=active_link_user_ids,
+                    team_ids=memberships.get(u.id, []),
                 )
             )
 
@@ -117,11 +134,16 @@ class AdminService:
     # --- Grouped dashboard (SSR /admin, §7) --------------------------------
 
     async def grouped_dashboard(self) -> dict[str, Any]:
-        """Предгруппированный контекст для SSR ``/admin`` (docs/05 §7).
+        """Предгруппированный контекст для SSR ``/admin`` (docs/05 §7, ADR-0012).
 
         Возвращает ``super_admins``, ``team_sections`` (по командам, лидер первым),
         ``teams`` (для select) и ``unassigned_numbers`` (пул, ADR-0009). Согласовано
-        с ``list_users`` (те же поля и порядок), но представлено сгруппированно.
+        с ``list_users`` (те же поля + ``team_ids``), но представлено сгруппированно.
+
+        Multi-team (ADR-0012): пользователь с несколькими членствами попадает в
+        КАЖДУЮ свою ``team_section``. В домашней ``is_home=true`` (бейдж «домашняя»),
+        в доп. — ``is_home=false``. Лидер помечается ``is_leader=true`` только в
+        домашней команде. Группировка строится из bulk-членств ``user_teams``.
         """
         users = await self._users.list_all()
         teams_list = await self._teams.list_all()  # отсортированы по name
@@ -129,22 +151,39 @@ class AdminService:
         active_link_user_ids = await self._links.users_with_active_link(
             [u.id for u in users]
         )
+        memberships = await self._memberships.list_team_ids_for_users(
+            [u.id for u in users]
+        )
 
         super_admins: list[dict[str, Any]] = []
         by_team: dict[int, list[dict[str, Any]]] = {}
         for u in users:
-            team = teams.get(u.team_id) if u.team_id is not None else None
-            is_leader = team is not None and team.leader_user_id == u.id
-            item = self._user_item(
+            home_team = teams.get(u.team_id) if u.team_id is not None else None
+            is_home_leader = home_team is not None and home_team.leader_user_id == u.id
+            user_team_ids = memberships.get(u.id, [])
+            base = self._user_item(
                 u,
-                team_name=team.name if team is not None else None,
-                is_leader=is_leader,
+                team_name=home_team.name if home_team is not None else None,
+                is_leader=is_home_leader,
                 active_link_user_ids=active_link_user_ids,
+                team_ids=user_team_ids,
             )
             if u.role == ROLE_SUPER_ADMIN:
-                super_admins.append(item)
-            elif u.team_id is not None:
-                by_team.setdefault(u.team_id, []).append(item)
+                super_admins.append(base)
+                continue
+            # Пользователь попадает в каждую свою команду (home + доп.).
+            section_team_ids = set(user_team_ids)
+            if u.team_id is not None:
+                section_team_ids.add(u.team_id)
+            for tid in section_team_ids:
+                is_home = tid == u.team_id
+                member_item = {
+                    **base,
+                    "is_home": is_home,
+                    # Лидерство — только в домашней команде.
+                    "is_leader": is_home and is_home_leader,
+                }
+                by_team.setdefault(tid, []).append(member_item)
 
         super_admins.sort(key=lambda i: i["username"])
 
@@ -232,6 +271,9 @@ class AdminService:
             user_agent=user_agent,
         )
 
+        # ADR-0012: зеркалим домашнее членство в user_teams (та же транзакция).
+        await self._memberships.add(user_id=user.id, team_id=team_id)
+
         # Правило «первый=лидер».
         role = await TeamsService(self._db).set_leader_if_absent(
             actor_user_id=actor_user_id,
@@ -293,15 +335,19 @@ class AdminService:
 
         leader_nulled_team: int | None = None
         if target.role == "group_leader" and target.team_id is not None:
-            member_ids = await self._users.list_user_ids_in_team(target.team_id)
-            others = [uid for uid in member_ids if uid != target.id]
-            if others:
+            # Лидерство/инвариант привязаны к users.team_id (home). Блокируют
+            # удаление только ДРУГИЕ ДОМАШНИЕ участники (переназначаемые в лидеры),
+            # а не доп.-участники другой home-команды (ADR-0012). Согласовано с
+            # home-based disband-gate. target — home-участник → count > 1 ⇔ есть
+            # другие домашние.
+            if await self._users.count_home_members(target.team_id) > 1:
                 raise ApiError(
                     "user_is_leader",
                     "Пользователь — лидер непустой команды; сначала переназначьте лидера",
                     status_code=409,
                 )
-            # Лидер и единственный участник — обнуляем лидера, команда становится пустой.
+            # Лидер и единственный ДОМАШНИЙ участник — обнуляем лидера, команда
+            # становится пустой (доп.-участники остаются, лидерства не требуют).
             await self._teams.set_leader(team_id=target.team_id, leader_user_id=None)
             leader_nulled_team = target.team_id
 
@@ -391,9 +437,11 @@ class AdminService:
 
         leader_nulled_team: int | None = None
         if target.role == "group_leader" and old_team is not None:
-            member_ids = await self._users.list_user_ids_in_team(old_team)
-            others = [uid for uid in member_ids if uid != target.id]
-            if others:
+            # Как и в delete_user: блокируют перенос только ДРУГИЕ ДОМАШНИЕ
+            # участники команды-источника (users.team_id==old_team), а не
+            # доп.-участники другой home-команды (ADR-0012). target — home →
+            # count > 1 ⇔ есть другие домашние.
+            if await self._users.count_home_members(old_team) > 1:
                 raise ApiError(
                     "leader_move_forbidden",
                     "Лидер непустой команды не может быть перемещён; сначала переназначьте лидера",
@@ -406,6 +454,13 @@ class AdminService:
         await self._users.update_fields(
             target.id, team_id=new_team_id, role=ROLE_GROUP_MEMBER
         )
+        # ADR-0012: синхронизируем домашнее членство — удаляем старую home-строку,
+        # добавляем новую (add идемпотентен: дедуп, если новая home уже была доп.
+        # членством). Доп. членства не трогаем.
+        if old_team is not None:
+            await self._memberships.remove(user_id=target.id, team_id=old_team)
+        await self._memberships.add(user_id=target.id, team_id=new_team_id)
+
         role = await TeamsService(self._db).set_leader_if_absent(
             actor_user_id=actor_user_id,
             team_id=new_team_id,
@@ -434,3 +489,87 @@ class AdminService:
                 ip=ip,
                 user_agent=user_agent,
             )
+
+    # --- Доп. членство (ADR-0012) -----------------------------------------
+
+    async def add_membership(
+        self,
+        *,
+        actor_user_id: int,
+        target_id: int,
+        team_id: int,
+        ip: str,
+        user_agent: str | None,
+    ) -> dict[str, Any]:
+        """Добавить дополнительное членство (docs/05 §4, ADR-0012).
+
+        super_admin-only (guard роутера). Target не может быть super_admin.
+        Идемпотентно через UNIQUE — повтор → ``409 membership_already_exists``.
+        Не меняет ``users.team_id`` (домашнюю) и ``users.role``. Ревокует сессии
+        target, чтобы ``VisibilityScope.team_ids`` перечитался из ``user_teams``.
+        """
+        target = await self._users.get_by_id(target_id)
+        if target is None:
+            raise NotFoundError("user_not_found", "Пользователь не найден")
+        if target.role == ROLE_SUPER_ADMIN:
+            raise CannotAddSuperAdminToTeamError(
+                detail="Нельзя добавить super_admin в команду"
+            )
+        if await self._teams.get(team_id) is None:
+            raise NotFoundError("team_not_found", "Команда не найдена")
+
+        created = await self._memberships.add(user_id=target_id, team_id=team_id)
+        if not created:
+            raise MembershipAlreadyExistsError(
+                detail="Пользователь уже состоит в этой команде"
+            )
+
+        await self._sessions.revoke_all_for_user(target_id)
+        await self._audit.log(
+            actor_user_id=actor_user_id,
+            action="user_team_add",
+            target_user_id=target_id,
+            target_username=target.username,
+            details={"team_id": team_id},
+            ip=ip,
+            user_agent=user_agent,
+        )
+        return {"user_id": target_id, "team_id": team_id}
+
+    async def remove_membership(
+        self,
+        *,
+        actor_user_id: int,
+        target_id: int,
+        team_id: int,
+        ip: str,
+        user_agent: str | None,
+    ) -> None:
+        """Убрать дополнительное членство (docs/05 §4, ADR-0012).
+
+        super_admin-only. Домашнее членство (``team_id == users.team_id``) убрать
+        нельзя — для этого есть move (``PATCH``). Несуществующее доп. членство →
+        ``404 membership_not_found``. Ревокует сессии target при успехе.
+        """
+        target = await self._users.get_by_id(target_id)
+        if target is None:
+            raise NotFoundError("user_not_found", "Пользователь не найден")
+        if target.team_id is not None and target.team_id == team_id:
+            raise CannotRemoveHomeMembershipError(
+                detail="Нельзя убрать домашнюю команду; смена — через перемещение"
+            )
+
+        removed = await self._memberships.remove(user_id=target_id, team_id=team_id)
+        if not removed:
+            raise MembershipNotFoundError(detail="Такого членства нет")
+
+        await self._sessions.revoke_all_for_user(target_id)
+        await self._audit.log(
+            actor_user_id=actor_user_id,
+            action="user_team_remove",
+            target_user_id=target_id,
+            target_username=target.username,
+            details={"team_id": team_id},
+            ip=ip,
+            user_agent=user_agent,
+        )

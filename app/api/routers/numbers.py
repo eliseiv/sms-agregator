@@ -55,9 +55,10 @@ async def list_numbers(
             else await repo.list_all()
         )
     else:
-        if scope.team_id is None:
+        # ADR-0012: номера всех команд участника (home ∪ доп.), не только home.
+        if not scope.team_ids:
             return JSONResponse(content={"numbers": []})
-        numbers = await repo.list_by_team(scope.team_id)
+        numbers = await repo.list_by_teams(scope.team_ids)
     team_map = {t.id: t.name for t in await teams.list_all()}
     items = [
         serialize_number(n, team_map.get(n.team_id) if n.team_id is not None else None)
@@ -73,7 +74,8 @@ async def create_number(
     body = await _read_body(request)
     payload = CreateNumberRequest.model_validate(body)
 
-    # team_id: участник — из своей команды; super_admin обязан передать явно.
+    # team_id: участник — любая из СВОИХ команд (scope.team_ids, ADR-0012);
+    # super_admin обязан передать явно.
     if scope.is_super_admin:
         if payload.team_id is None:
             raise ApiError(
@@ -81,13 +83,19 @@ async def create_number(
             )
         team_id = payload.team_id
     else:
-        if payload.team_id is not None and payload.team_id != scope.team_id:
-            raise ApiError(
-                "forbidden", "Нельзя добавить номер в чужую команду", status_code=403
-            )
-        if scope.team_id is None:
+        if payload.team_id is not None:
+            if payload.team_id not in scope.team_ids:
+                raise ApiError(
+                    "forbidden",
+                    "Нельзя добавить номер в чужую команду",
+                    status_code=403,
+                )
+            team_id = payload.team_id
+        elif scope.team_id is not None:
+            # Дефолт — домашняя команда, если участник не выбрал явно.
+            team_id = scope.team_id
+        else:
             raise ApiError("forbidden", "У пользователя нет команды", status_code=403)
-        team_id = scope.team_id
 
     normalized = normalize_phone(payload.phone_number)
     if not _E164_RE.match(normalized):
@@ -138,7 +146,10 @@ async def delete_number(
     number = await repo.get(number_id)
     if number is None:
         raise NotFoundError("number_not_found", "Номер не найден")
-    if not scope.is_super_admin and number.team_id != scope.team_id:
+    # ADR-0012: участник управляет номерами любой своей команды (scope.team_ids).
+    if not scope.is_super_admin and (
+        number.team_id is None or number.team_id not in scope.team_ids
+    ):
         raise ApiError(
             "forbidden", "Нельзя удалить номер чужой команды", status_code=403
         )

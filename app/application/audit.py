@@ -26,6 +26,8 @@ ALLOWED_ACTIONS: Final[frozenset[str]] = frozenset(
         "team_delete",
         "team_leader_set",
         "user_team_change",
+        "user_team_add",
+        "user_team_remove",
         "number_added",
         "number_removed",
         "number_team_assigned",

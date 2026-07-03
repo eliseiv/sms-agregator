@@ -48,6 +48,11 @@
     cannot_delete_super_admin: 'Администратора удалить нельзя.',
     cannot_reset_super_admin: 'Пароль администратора сбросить нельзя.',
     role_team_invariant: 'Недопустимое сочетание роли и команды.',
+    // membership (multi-team, ADR-0012, docs/05 §4)
+    cannot_add_super_admin_to_team: 'Администратора нельзя добавить в команду.',
+    membership_already_exists: 'Пользователь уже состоит в этой команде.',
+    cannot_remove_home_membership: 'Нельзя убрать домашнюю команду. Смените её через «Перевести».',
+    membership_not_found: 'Членство не найдено — возможно, уже удалено.',
     // teams
     team_name_taken: 'Команда с таким названием уже есть.',
     invalid_name: 'Недопустимое название (1–100 символов).',

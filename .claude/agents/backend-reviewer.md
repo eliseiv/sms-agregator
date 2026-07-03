@@ -88,6 +88,7 @@ TODO|FIXME|XXX|HACK|WIP|stub
 - Race conditions при конкурентных вызовах?
 - Exception handling — конкретные типы, не голый `except`?
 - Retry / circuit breaker для external HTTP?
+- **Семантика guard'ов инвариантов при расширении модели (single→M:N, введение membership-таблиц типа `user_teams`):** guard'ы ИНВАРИАНТОВ (лидер команды, роль↔team, disband-gate) читают HOME-семантику (`users.team_id` / home-счётчик), а не membership-счётчики (`user_teams`, включающие доп.-участников). Guard, «поплывший» на membership при переходе на M:N = **major**.
 
 ### Шаг 6: Качество кода
 - Type hints / типизация — везде?
@@ -163,6 +164,7 @@ TODO|FIXME|XXX|HACK|WIP|stub
 - [ ] Каждый endpoint/model/event из ТЗ проверен
 - [ ] Безопасность проверена (auth, секреты, TLS)
 - [ ] Отказоустойчивость проверена (idempotency, retry, N+1)
+- [ ] При расширении модели (single→M:N) guard'ы инвариантов (лидер/роль↔team/disband) на HOME-семантике (`users.team_id`), не на membership-счётчиках
 - [ ] Severity classification применён корректно (функциональный пробел = major)
 - [ ] JSON корректен
 

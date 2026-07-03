@@ -82,6 +82,7 @@ _ALL_TABLES = (
     "inbound_sms",
     "phone_numbers",
     "telegram_links",
+    "user_teams",
     "admin_audit",
     "service_state",
     "users",
@@ -204,8 +205,16 @@ async def seed_user(
     password_reset_required: bool = False,
     make_leader: bool = False,
 ):
-    """Создать пользователя; при make_leader — назначить лидером его команды."""
-    from app.infrastructure.repositories import TeamRepository, UserRepository
+    """Создать пользователя; при make_leader — назначить лидером его команды.
+
+    Зеркалит home-членство в ``user_teams`` (инвариант ADR-0012: домашняя команда
+    всегда присутствует в членствах), как это делает prod ``create_user``.
+    """
+    from app.infrastructure.repositories import (
+        TeamRepository,
+        UserRepository,
+        UserTeamRepository,
+    )
 
     users = UserRepository(session)
     user = await users.create(
@@ -215,12 +224,21 @@ async def seed_user(
         password_hash=password_hash,
         password_reset_required=password_reset_required,
     )
+    if team_id is not None:
+        await UserTeamRepository(session).add(user_id=user.id, team_id=team_id)
     if role == "group_leader" and team_id is not None:
         await TeamRepository(session).set_leader(
             team_id=team_id, leader_user_id=user.id
         )
         await users.update_fields(user.id, role="group_leader")
     return user
+
+
+async def seed_membership(session, *, user_id: int, team_id: int) -> None:
+    """Добавить доп. членство user↔team (ADR-0012)."""
+    from app.infrastructure.repositories import UserTeamRepository
+
+    await UserTeamRepository(session).add(user_id=user_id, team_id=team_id)
 
 
 async def seed_link(session, *, telegram_user_id: int, user_id: int) -> None:

@@ -6,6 +6,7 @@
 | Дата | 2026-07-01 |
 | Связано | ADR-0003, ADR-0004; [03-architecture.md](../03-architecture.md), [04-data-model.md](../04-data-model.md), [05-api-contracts.md](../05-api-contracts.md) §1,§6 |
 | Амендмент | Изменён [ADR-0009](./ADR-0009-unassigned-numbers-admin-allocation.md): **(а)** §Decision 1 (`phone_numbers.team_id NOT NULL ... ON DELETE CASCADE`) — `team_id` теперь NULLABLE, FK `ON DELETE SET NULL` (unassigned-номера); **(б)** следствие в §Consequences/«Минусы» «удаление команды каскадит удаление `phone_numbers`» **более не действует** — удаление команды переводит её номера в unassigned (`team_id → NULL` через `ON DELETE SET NULL`), номера НЕ удаляются. Прочие пункты (получатели, неизвестный номер, идемпотентность, dead-links, удаление long polling, «любой участник добавляет номер») — в силе. |
+| Амендмент | Изменён **[ADR-0012](./ADR-0012-multi-team-membership.md) (2026-07-03)**: §Decision 2 — предикат получателей `users.team_id = :team_id` **заменён** на проверку членства через `user_teams`. `recipients_for_team(team_id)` теперь возвращает участников, для которых существует строка `user_teams(user_id, team_id=:team_id)` (home ИЛИ доп. членство), И живая `telegram_links` (`dead_at IS NULL`). Участник нескольких команд автоматически получает SMS каждой своей команды. `handle_incoming_sms` и идемпотентность (§4) **не меняются**. Пункт §Decision 5 «любой участник добавляет номера **своей** команды» распространяется на **все** команды участника (`team_ids`, [ADR-0012](./ADR-0012-multi-team-membership.md) §2). |
 
 ## Context
 
@@ -16,7 +17,7 @@
 ## Decision
 
 1. **Номер привязан к команде.** `phone_numbers.team_id NOT NULL FK teams(id) ON DELETE CASCADE`. Каждый входящий SMS адресуется команде номера-получателя.
-2. **Получатели SMS** — все пользователи команды с **активной** привязкой Telegram: `recipients_for_team(team_id)` = `JOIN users ↔ telegram_links` по `users.team_id = :team_id AND telegram_links.dead_at IS NULL`, возвращает пары `(user_id, telegram_user_id)`. chat_id = `telegram_user_id` из initData. Пользователь без живой привязки SMS не получает.
+2. **Получатели SMS** — все участники команды с **активной** привязкой Telegram: `recipients_for_team(team_id)` = `JOIN users ↔ telegram_links` по `telegram_links.dead_at IS NULL`, возвращает пары `(user_id, telegram_user_id)`. chat_id = `telegram_user_id` из initData. Пользователь без живой привязки SMS не получает. **Членство в команде** (амендмент [ADR-0012](./ADR-0012-multi-team-membership.md), 2026-07-03): предикат «участник команды» — `EXISTS/JOIN user_teams ut WHERE ut.user_id = users.id AND ut.team_id = :team_id` (home ИЛИ доп. членство), **вместо** прежнего `users.team_id = :team_id`. Так участник нескольких команд получает SMS каждой своей команды.
 3. **Неизвестный номер** (нет `phone_numbers` для `To`): `inbound_sms` сохраняется с `team_id = NULL`, доставок нет, webhook возвращает `200` (SMS не теряется, warning в лог).
 4. **Идемпотентность:**
    - webhook по `twilio_message_sid` (partial-UNIQUE `inbound_sms_sid_uq`) — ретраи Twilio не создают дублей;

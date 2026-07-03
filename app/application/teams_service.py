@@ -12,7 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.audit import AuditWriter
 from app.exceptions import ApiError, NotFoundError, ValidationError
-from app.infrastructure.repositories import TeamRepository, UserRepository
+from app.infrastructure.repositories import (
+    TeamRepository,
+    UserRepository,
+    UserTeamRepository,
+)
 from app.infrastructure.sessions import SessionStore
 from shared.logging import get_logger
 from shared.models import ROLE_GROUP_LEADER, ROLE_GROUP_MEMBER, Team
@@ -34,6 +38,7 @@ class TeamsService:
         self._db = session
         self._teams = TeamRepository(session)
         self._users = UserRepository(session)
+        self._memberships = UserTeamRepository(session)
         self._audit = AuditWriter(session)
         self._sessions = SessionStore()
 
@@ -104,13 +109,18 @@ class TeamsService:
         team = await self._teams.get(team_id)
         if team is None:
             raise NotFoundError("team_not_found", "Команда не найдена")
-        members = await self._users.list_user_ids_in_team(team_id)
-        if team.leader_user_id is not None or members:
+        # Disband требует HOME-пустоты (docs/05 §5): leader NULL И нет пользователей
+        # с домашней командой = team_id. Доп. участники (user_teams) расформированию
+        # НЕ мешают — их членство снимет CASCADE, а сессии ревокаем ниже (ADR-0012).
+        home_members = await self._users.count_home_members(team_id)
+        if team.leader_user_id is not None or home_members > 0:
             raise ApiError(
                 "team_has_members",
                 "Команда не пуста — сначала распустите участников",
                 status_code=409,
             )
+        # Снимок доп.-участников ДО удаления (CASCADE снимет строки user_teams).
+        affected_user_ids = await self._memberships.list_user_ids_for_team(team_id)
         # Номера команды не удаляются: FK ON DELETE SET NULL → возврат в unassigned-пул
         # (ADR-0009). Фиксируем число ставших unassigned в аудите (docs/05 §5).
         unassigned_count = (await self._teams.numbers_counts([team_id])).get(team_id, 0)
@@ -126,6 +136,10 @@ class TeamsService:
             ip=ip,
             user_agent=user_agent,
         )
+        # ADR-0012: ревокуем сессии всех, у кого были строки user_teams в команде
+        # (доп.-участники тоже) — иначе их VisibilityScope.team_ids останется stale.
+        for uid in affected_user_ids:
+            await self._sessions.revoke_all_for_user(uid)
 
     # --- Смена лидера внутри команды --------------------------------------
 

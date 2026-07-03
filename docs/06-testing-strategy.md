@@ -7,7 +7,7 @@
 | Уровень | Что покрывает | Инфраструктура |
 | --- | --- | --- |
 | **Unit** | `verify_init_data` (HMAC/TTL), `normalize_phone`, `format_sms_message`, `_split_message`, политика паролей, argon2 wrapper, инварианты ролей. | Без внешних зависимостей; моки. |
-| **Integration (DB)** | Репозитории на реальном PostgreSQL, миграции Alembic, CHECK/UNIQUE/DEFERRABLE FK/триггеры, `try_reserve` идемпотентность, `recipients_for_team`. | PostgreSQL (Docker/тест-БД), Redis (или fakeredis). |
+| **Integration (DB)** | Репозитории на реальном PostgreSQL, миграции Alembic, CHECK/UNIQUE/DEFERRABLE FK/триггеры, `try_reserve` идемпотентность, `recipients_for_team` (через `user_teams`), `UserTeamRepository` (add/remove/list_team_ids), backfill home-членств. | PostgreSQL (Docker/тест-БД), Redis (или fakeredis). |
 | **Contract/API** | Endpoints через `httpx.AsyncClient`/TestClient: webhook, auth flow, Mini App SSO, admin/teams/numbers, guards, CSRF, коды ошибок. | app + PG + Redis; Telegram Bot API и Twilio — моки. |
 | **Migration** | Обратимость схемы и скрипт данных `migrate_sqlite_to_pg.py` на копии `service.db`. | PG + временная SQLite. |
 
@@ -24,6 +24,7 @@
 2. После `upgrade head` `alembic revision --autogenerate` даёт **пустой** diff (модели ↔ миграция согласованы).
 3. Проверка наличия всех CHECK (`users_role_team_invariant`, `users_username_lower_check`), UNIQUE (`inbound_sms_sid_uq`, `deliveries_sms_chat_uq`, `phone_numbers.phone_number`), триггеров (`set_updated_at`, лидерство), DEFERRABLE FK `users.team_id`.
 3a. **Unassigned-номера ([ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)):** `phone_numbers.team_id` — NULLABLE; FK `phone_numbers.team_id → teams(id)` имеет `ON DELETE SET NULL` (не CASCADE). Вставка номера с `team_id=NULL` проходит. Удаление команды с номерами → номера сохраняются с `team_id=NULL` (не удалены). Revision применяется/откатывается, autogenerate-diff пуст.
+3b. **`user_teams` и backfill ([ADR-0012](./adr/ADR-0012-multi-team-membership.md)):** ревизия `20260702_003_user_teams` создаёт таблицу с UNIQUE `(user_id, team_id)` + `INDEX(team_id)`, FK `user_id`/`team_id` — `ON DELETE CASCADE`. После `upgrade` **backfill**: число строк `user_teams` = число пользователей с `team_id IS NOT NULL` (super_admin с `team_id IS NULL` не попал); каждая home-строка = `(user_id, users.team_id)`. `upgrade→downgrade→upgrade` без ошибок; `downgrade` дропает таблицу. Повторный `INSERT ... ON CONFLICT DO NOTHING` дублей не создаёт. autogenerate-diff после upgrade — **пуст** (модель `user_teams` ↔ миграция согласованы). Удаление пользователя → каскадом удаляются его строки `user_teams`; удаление команды → каскадом её строки.
 
 ### Приём SMS
 4. Seed: команда T + user U (`team_id=T`, `role=group_leader`) + `telegram_links(U, chat_id, dead_at=NULL)` + номер N (`team_id=T`). `POST /api/webhooks/twilio/sms` (`MessageSid=SMt1`, `From`, `To=N`, `Body=hi`, `VERIFY_TWILIO_SIGNATURE=false`) → `200`; в БД: 1 `inbound_sms(team_id=T)` + 1 `deliveries(status=sent)`; мок `send_message` вызван с `chat_id`.
@@ -71,5 +72,18 @@
 30. Ошибка `send_message` (мок сети) при `/start` → обработчик всё равно `200` (не роняется); секрет-токен/тело не попадают в логи.
 31. Флуд по IP → `429` (rate-limit §4).
 
+### Multi-team ([ADR-0012](./adr/ADR-0012-multi-team-membership.md))
+32. **`recipients_for_team` через членство.** Команды T1, T2. Пользователь U: домашняя T1 (`users.team_id=T1`, backfilled home в `user_teams`), доп. членство в T2 (`user_teams(U,T2)`), живая `telegram_links`. Номер N2 в T2. `POST /api/webhooks/twilio/sms` на N2 → U **получает** (recipients через `user_teams`, а не `users.team_id`): 1 `delivery(status=sent)` для U. Контроль: пользователь V только в T1 (не в T2) SMS на N2 **не** получает.
+33. **Add членства.** `POST /api/admin/users/{U}/teams {team_id:T2}` (super_admin) → `201`; строка `user_teams(U,T2)`; сессии U ревокнуты (повторный запрос требует нового входа / scope перечитан). Повтор → `409 membership_already_exists`. Роль U и `teams.leader_user_id` не изменились. Не-админ → `403`. super_admin как target → `400 cannot_add_super_admin_to_team`. Несуществующий user/team → `404 user_not_found`/`team_not_found`.
+34. **Remove членства.** После доп. членства `DELETE /api/admin/users/{U}/teams/{T2}` → `204`; строки нет; сессии ревокнуты; U перестаёт получать SMS T2. Попытка удалить **домашнюю** (`{T1}`) → `400 cannot_remove_home_membership`. Несуществующее членство → `404 membership_not_found`. Form-fallback: `POST` на same-path `/api/admin/users/{U}/teams/{T2}` с `_method=DELETE` (CSRF) → эквивалентно `DELETE` (`204`/redirect).
+35. **create_user зеркалит home.** `POST /api/admin/users {team_id:T}` → создан `users.team_id=T` **и** строка `user_teams(new_id, T)` в той же транзакции.
+36. **PATCH move синхронизирует членство.** Обычный участник U (home T1) `PATCH /api/admin/users/{U} {team_id:T2}` → `users.team_id=T2`; в `user_teams` **удалена** `(U,T1)`, **добавлена** `(U,T2)`; доп. членства не тронуты; сессии ревокнуты. Инварианты лидера/«первый=лидер» соблюдены; перенос лидера непустой команды → `409` (без изменения `user_teams`).
+37. **`GET /api/numbers` и `/app` scope=team_ids.** U в T1+T2, номера в обеих → `GET /api/numbers` возвращает номера **обеих** команд; `GET /app` → `200`, номера сгруппированы по командам, селектор команды содержит T1 и T2. `POST /api/numbers {team_id:T2}` от U → `201`; `POST /api/numbers {team_id:T3}` (не своя) → `403 forbidden`. `DELETE` номера T2 участником U → `200`.
+38. **`GET /api/admin/users` / SSR `/admin` мультисекции.** Ответ содержит `team_ids` (home + доп.). SSR `/admin`: U показан в секциях **обеих** команд; в домашней `is_home=true`, в доп. `is_home=false`; `is_leader` только в домашней. класс банда секций (вычисляется **в шаблоне**, не поле контракта) чередуется (`admin__group--band-a`/`--band-b`); «Администраторы» — `admin__group--no-team`. Рендер `200`.
+39. **Ревокация сессий (нормативно).** После add/remove/move членства активная сессия target инвалидируется (`revoke_all_for_user`) — старый `VisibilityScope.team_ids` не переиспользуется (stale scope исключён). **DELETE команды с доп.-участниками:** участник W с доп. членством в T2 (`user_teams(W,T2)`, домашняя — T1). После штатного disband и `DELETE /api/admin/teams/{T2}` (CASCADE снял строку `user_teams(W,T2)`) — сессии W ревокнуты (`revoke_all_for_user(W)`): в новом scope `team_ids` не содержит T2.
+
+### Подсветка команд — banding (UI)
+40. **CSP-safe banding.** `/admin` с ≥2 командами: секции получают чередующиеся классы `admin__group--band-a`/`--band-b`, секция администраторов — `admin__group--no-team`; подсветка задаётся **только классами** (нет inline-style), CSP не нарушается. Схема БД без `teams.color`.
+
 ### Smoke
-32. `docker compose up` — порядок `postgres(healthy) → migrate(completed) → app`; `GET /health` → `200`.
+41. `docker compose up` — порядок `postgres(healthy) → migrate(completed) → app`; `GET /health` → `200`.

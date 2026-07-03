@@ -18,6 +18,7 @@ from shared.models.user import (
     ROLE_SUPER_ADMIN,
     User,
 )
+from shared.models.user_team import UserTeam
 
 __all__ = [
     "ALL_ROLES",
@@ -32,4 +33,5 @@ __all__ = [
     "Team",
     "TelegramLink",
     "User",
+    "UserTeam",
 ]

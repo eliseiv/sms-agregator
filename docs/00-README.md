@@ -30,10 +30,11 @@ Bootstrap-версия документации под крупную дораб
 - Двухэтапный логин: сначала логин, затем пароль (см. [ADR-0002](./adr/ADR-0002-two-step-login.md)).
 - Роли `super_admin`/`group_leader`/`group_member`, команда = `teams`, первый добавленный участник = лидер (см. [ADR-0003](./adr/ADR-0003-roles-and-teams.md)).
 - Вход и восстановление привязки через Telegram Mini App (initData HMAC, pending-токены, self-heal, dead-links) (см. [ADR-0004](./adr/ADR-0004-telegram-mini-app-sso.md)).
-- Адресация SMS: номер → команда → все участники команды с живой `telegram_links` (см. [ADR-0005](./adr/ADR-0005-sms-addressing-via-team.md)).
+- Адресация SMS: номер → команда → все участники команды (через членство `user_teams`) с живой `telegram_links` (см. [ADR-0005](./adr/ADR-0005-sms-addressing-via-team.md)).
 - Миграция данных SQLite → PostgreSQL одноразовым скриптом (см. [ADR-0006](./adr/ADR-0006-data-migration-sqlite-to-pg.md)).
 - Production-деплой за общим edge-nginx соседа (`mas-nginx`/`mas-net`), домен novirell.shop, additive vhost, host certbot (см. [ADR-0007](./adr/ADR-0007-deploy-behind-shared-edge-nginx.md)).
 - Unassigned-номера: `phone_numbers.team_id` NULLABLE (`ON DELETE SET NULL`), админское распределение по командам, импорт легаси-номеров как unassigned (см. [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)).
 - Приём апдейтов бота через webhook (только `/start` → кнопка Mini App), секрет-токен, новый бот-токен (см. [ADR-0010](./adr/ADR-0010-telegram-webhook-and-new-bot.md)).
 - Первый вход по ТЗ: шаг-1 `POST /login` ветвится по состоянию и направляет неактивированный аккаунт сразу на `/set-password` («придумай пароль»); анти-энумерация шага-1 ослаблена до мягкой (амендмент [ADR-0002](./adr/ADR-0002-two-step-login.md), риск TD-010).
 - «Залипающий» logout в Mini App: cookie `sms_logged_out` подавляет авто-SSO до явного входа, привязка/push сохраняются (см. [ADR-0011](./adr/ADR-0011-sticky-logout-vs-miniapp-sso.md), амендит [ADR-0004](./adr/ADR-0004-telegram-mini-app-sso.md) §5).
+- Multi-team: аддитивная M:N `user_teams`, домашняя команда = `users.team_id`; участник видит/добавляет номера и получает SMS всех своих команд; админ управляет членством; подсветка команд (banding) на `/admin`; роль остаётся глобальной, лидерство — на домашней (см. [ADR-0012](./adr/ADR-0012-multi-team-membership.md), закрывает `TD-003`).

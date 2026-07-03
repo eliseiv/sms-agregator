@@ -2,7 +2,7 @@
 
 СУБД — **PostgreSQL 16**. Кодировка UTF-8. Все временные поля — `TIMESTAMPTZ` в UTC. Все PK — `BIGINT` (`BIGSERIAL`/identity). JSONB для сырых payload'ов.
 
-Источники решений: [ADR-0001](./adr/ADR-0001-postgres-sqlalchemy-async.md) (стек/схема), [ADR-0003](./adr/ADR-0003-roles-and-teams.md) (роли/команды), [ADR-0004](./adr/ADR-0004-telegram-mini-app-sso.md) (`telegram_links`), [ADR-0005](./adr/ADR-0005-sms-addressing-via-team.md) (адресация), [ADR-0006](./adr/ADR-0006-data-migration-sqlite-to-pg.md) (миграция), [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md) (unassigned-номера: `phone_numbers.team_id` NULLABLE + `ON DELETE SET NULL`).
+Источники решений: [ADR-0001](./adr/ADR-0001-postgres-sqlalchemy-async.md) (стек/схема), [ADR-0003](./adr/ADR-0003-roles-and-teams.md) (роли/команды), [ADR-0004](./adr/ADR-0004-telegram-mini-app-sso.md) (`telegram_links`), [ADR-0005](./adr/ADR-0005-sms-addressing-via-team.md) (адресация), [ADR-0006](./adr/ADR-0006-data-migration-sqlite-to-pg.md) (миграция), [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md) (unassigned-номера: `phone_numbers.team_id` NULLABLE + `ON DELETE SET NULL`), [ADR-0012](./adr/ADR-0012-multi-team-membership.md) (multi-team: аддитивная M:N `user_teams`, `users.team_id` = домашняя команда).
 
 Общие конвенции: `created_at`/`updated_at` — `TIMESTAMPTZ NOT NULL DEFAULT now()`; триггер `set_updated_at()` (BEFORE UPDATE) обновляет `updated_at`; частичные индексы по `is_active`/`dead_at`.
 
@@ -11,7 +11,9 @@
 ```mermaid
 erDiagram
     teams  ||--o| users : "leader (1:1 via teams.leader_user_id)"
-    teams  ||--o{ users : "members (1:N via users.team_id)"
+    teams  ||--o{ users : "home team (1:N via users.team_id)"
+    users  ||--o{ user_teams : "membership (M:N)"
+    teams  ||--o{ user_teams : "membership (M:N)"
     teams  ||--o{ phone_numbers : "owns (nullable = unassigned)"
     teams  ||--o{ inbound_sms : "addressed_to (nullable)"
     users  ||--o{ telegram_links : "linked (1:N)"
@@ -40,6 +42,12 @@ erDiagram
         timestamptz last_login_at "nullable"
         timestamptz created_at
         timestamptz updated_at
+    }
+    user_teams {
+        bigint id PK
+        bigint user_id FK "ON DELETE CASCADE"
+        bigint team_id FK "ON DELETE CASCADE"
+        timestamptz created_at
     }
     telegram_links {
         bigint telegram_user_id PK "= chat_id"
@@ -127,7 +135,7 @@ erDiagram
 | `username` | TEXT | NOT NULL, UNIQUE, CHECK `username = lower(username)` | Логин. Нормализуется в lower-case приложением; CHECK — defense-in-depth. Для legacy tg-аккаунтов после миграции — `'tg_'+telegram_id`. |
 | `password_hash` | VARCHAR(255) | NULL | argon2id. NULL — пароль ещё не задан (создан админом) или сброшен. |
 | `role` | TEXT | NOT NULL DEFAULT `'group_member'`, CHECK IN (`super_admin`,`group_leader`,`group_member`) | Роль. `seed_admin` upsert'ит `super_admin`. |
-| `team_id` | BIGINT | NULL, FK → `teams(id)` ON DELETE SET NULL, **DEFERRABLE INITIALLY DEFERRED** | Команда пользователя. Multi-team не вводится. DEFERRABLE — из-за циклического FK с `teams.leader_user_id` (создание лидера: INSERT user → INSERT/UPDATE team → UPDATE user.team_id, проверка FK откладывается до COMMIT). |
+| `team_id` | BIGINT | NULL, FK → `teams(id)` ON DELETE SET NULL, **DEFERRABLE INITIALLY DEFERRED** | **Домашняя (home/primary) команда** пользователя ([ADR-0012](./adr/ADR-0012-multi-team-membership.md)). Источник инварианта роль↔team, правила «первый=лидер» и дефолта команды при добавлении номера. Доп. членства в других командах — в `user_teams` (M:N). DEFERRABLE — из-за циклического FK с `teams.leader_user_id` (создание лидера: INSERT user → INSERT/UPDATE team → UPDATE user.team_id, проверка FK откладывается до COMMIT). |
 | `display_name` | TEXT | NULL, CHECK length 1..100 | Человекочитаемое имя для UI; fallback на `username`. |
 | `password_reset_required` | BOOLEAN | NOT NULL DEFAULT true | true после seed/create/reset; false после `set-password`. |
 | `lockout_until` | TIMESTAMPTZ | NULL | Если > now() — login отклоняется (см. [08-security.md](./08-security.md)). |
@@ -154,6 +162,29 @@ erDiagram
 **`seed_admin` и уникальность super_admin:** `seed_admin()` (при старте) upsert'ит super_admin из `ADMIN_LOGIN`/`ADMIN_PASSWORD`. Чтобы смена `ADMIN_LOGIN` не создала **второго** super_admin: seed сначала ищет **существующего** `super_admin` (по partial-индексу выше). Если он есть и его `username` отличается от `ADMIN_LOGIN` — seed **переименовывает** существующую строку (UPDATE `username`, `password_hash`), а не вставляет новую. Если строки нет — INSERT. Partial-UNIQUE индекс — страховка: попытка вставить второго super_admin падает на уровне БД. Детали seed-логики — [08-security.md](./08-security.md) §1.
 
 **Триггер лидерства (defense-in-depth, `users_team_leader_consistency_check`):** AFTER INSERT OR UPDATE OF `role`,`team_id`, DEFERRABLE INITIALLY DEFERRED — при `role='group_leader'` гарантирует существование `teams` с `id = users.team_id` И `leader_user_id = users.id`. Backend валидирует до SQL для понятных кодов ошибок.
+
+---
+
+### `user_teams` (M:N членство, [ADR-0012](./adr/ADR-0012-multi-team-membership.md))
+
+Аддитивная таблица членства «пользователь ↔ команда». **Источник истины** для адресации SMS (`recipients_for_team`), видимости/добавления номеров в `/app` и подсчёта участников команды. `users.team_id` остаётся **домашней** командой (см. `users` выше); `user_teams` дополняет её доп. членствами.
+
+| Колонка | Тип | Constraints | Описание |
+| --- | --- | --- | --- |
+| `id` | BIGSERIAL | PK | |
+| `user_id` | BIGINT | NOT NULL, FK → `users(id)` **ON DELETE CASCADE** | Участник. Удаление пользователя удаляет все его членства. |
+| `team_id` | BIGINT | NOT NULL, FK → `teams(id)` **ON DELETE CASCADE** | Команда. Удаление команды удаляет все членства в ней (само расформирование выполняется штатным disband-flow, см. [05-api-contracts.md](./05-api-contracts.md) §5; CASCADE — safety-net на строки `user_teams`). |
+| `created_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | Момент добавления членства. `updated_at`/триггер не нужны — строки append-only (нет мутируемых полей). |
+
+**Constraints:** UNIQUE `(user_id, team_id)` (`uq_user_teams_user_team`) — членство не дублируется; попытка повторного add → `409 membership_already_exists`.
+
+**Индексы:** UNIQUE выше (обслуживает и lookup `(user_id, team_id)` для `exists`); `user_teams_team_id_idx` на `(team_id)` — для `recipients_for_team`/member-списков по команде.
+
+**Инварианты (нормативно, [ADR-0012](./adr/ADR-0012-multi-team-membership.md)):**
+- **Home зеркалируется:** для каждого не-`super_admin` с `users.team_id IS NOT NULL` существует ровно одна home-строка `user_teams(user_id, team_id = users.team_id)`. Проставляется `create_user` и синхронизируется `PATCH /api/admin/users/{id}` (move: remove старый home + add новый home) — обе операции в одной транзакции со сменой `users.team_id`.
+- **super_admin не имеет членств:** для `role='super_admin'` строк в `user_teams` нет (согласуется с `team_id IS NULL`). Add super_admin в команду запрещён на уровне сервиса (`400 cannot_add_super_admin_to_team`); БД-CHECK не вводится (проверка на стороне приложения достаточна при единственном super_admin).
+- **Роль глобальна, лидерство — только на home:** `user_teams` не несёт роли; доп. членство не делает участника лидером доп. команды. UNIQUE-лидер (`teams.leader_user_id`) и CHECK `users_role_team_invariant` остаются на `users.team_id`.
+- **Home нельзя удалить через membership-API:** `DELETE .../teams/{team_id}` при `team_id = users.team_id` → `400 cannot_remove_home_membership` (смена домашней — только `PATCH` move). Так CHECK «у member/leader всегда есть команда» не нарушается.
 
 ---
 
@@ -238,7 +269,7 @@ erDiagram
 | --- | --- | --- | --- |
 | `id` | BIGSERIAL | PK | |
 | `actor_user_id` | BIGINT | NOT NULL | id действующего (обычно super_admin). **Без FK** — запись переживает удаление пользователя. |
-| `action` | TEXT | NOT NULL | Enum-string: `admin_login`, `admin_logout`, `create_user`, `reset_password`, `delete_user`, `lockout_triggered`, `team_create`, `team_rename`, `team_delete`, `team_leader_set`, `user_team_change`, `number_added`, `number_removed`, `number_team_assigned` (admin назначил/снял команду у номера — [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)), `telegram_link_created`, `telegram_link_revoked`, `telegram_link_dead_marked`, `telegram_link_rebound`. |
+| `action` | TEXT | NOT NULL | Enum-string: `admin_login`, `admin_logout`, `create_user`, `reset_password`, `delete_user`, `lockout_triggered`, `team_create`, `team_rename`, `team_delete`, `team_leader_set`, `user_team_change` (смена домашней команды — `PATCH user`), `user_team_add` / `user_team_remove` (доп. членство — [ADR-0012](./adr/ADR-0012-multi-team-membership.md)), `number_added`, `number_removed`, `number_team_assigned` (admin назначил/снял команду у номера — [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)), `telegram_link_created`, `telegram_link_revoked`, `telegram_link_dead_marked`, `telegram_link_rebound`. |
 | `target_user_id` | BIGINT | NULL | Затронутый пользователь. |
 | `target_username` | TEXT | NULL | Снимок username (на случай delete). |
 | `details` | JSONB | NULL | Структурированные детали (`{telegram_user_id, team_id, phone_number, ...}`). |
@@ -274,7 +305,17 @@ erDiagram
 
 - `alembic.ini`, `migrations/env.py` (async engine, `import shared.models`, `target_metadata = Base.metadata`, `compare_type=True`).
 - `migrations/versions/<rev>_initial_schema.py` — все таблицы, FK (с DEFERRABLE где указано), CHECK, UNIQUE, partial-индексы, триггеры/функции; обратимый `downgrade`.
-- `migrations/versions/<rev>_phone_numbers_team_nullable.py` — **новая ревизия** ([ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)): `phone_numbers.team_id` → NULLABLE; пересоздать FK `phone_numbers.team_id → teams(id)` с `ON DELETE SET NULL` (вместо `ON DELETE CASCADE`); индекс `(team_id)` остаётся непартиальным. `downgrade`: обратно `NOT NULL` + `ON DELETE CASCADE` (при наличии `team_id IS NULL` строк downgrade завершится ошибкой NOT NULL — ожидаемо, откат применим только на пустом пуле). Обновить SQLAlchemy-модель `phone_numbers` в `shared/models/`.
+- `migrations/versions/20260702_002_phone_numbers_team_nullable.py` — ревизия ([ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)): `phone_numbers.team_id` → NULLABLE; пересоздать FK `phone_numbers.team_id → teams(id)` с `ON DELETE SET NULL` (вместо `ON DELETE CASCADE`); индекс `(team_id)` остаётся непартиальным. `downgrade`: обратно `NOT NULL` + `ON DELETE CASCADE` (при наличии `team_id IS NULL` строк downgrade завершится ошибкой NOT NULL — ожидаемо, откат применим только на пустом пуле). Обновить SQLAlchemy-модель `phone_numbers` в `shared/models/`.
+- `migrations/versions/20260702_003_user_teams.py` — **новая ревизия** ([ADR-0012](./adr/ADR-0012-multi-team-membership.md)), `down_revision = "20260702_002"`. `upgrade`:
+  1. `CREATE TABLE user_teams` (колонки/FK `ON DELETE CASCADE` как выше) + UNIQUE `uq_user_teams_user_team (user_id, team_id)` + `INDEX user_teams_team_id_idx (team_id)`.
+  2. **Backfill home-членств** — идемпотентно перенести действующие домашние команды:
+     ```sql
+     INSERT INTO user_teams (user_id, team_id)
+     SELECT id, team_id FROM users WHERE team_id IS NOT NULL
+     ON CONFLICT (user_id, team_id) DO NOTHING;
+     ```
+     (`super_admin` имеет `team_id IS NULL` → не попадает; инвариант «super_admin без членств» соблюдён.)
+  `users.team_id` **НЕ** удаляется (остаётся домашней командой). `downgrade`: `DROP TABLE user_teams` (данные членств теряются — обратимо только структурно, домашние команды сохранены в `users.team_id`). Зарегистрировать модель `user_teams` в `shared/models/__init__.py`.
 - Требование: `alembic revision --autogenerate` после применения даёт **пустой** diff (см. [06-testing-strategy.md](./06-testing-strategy.md)).
 
 ---
@@ -287,7 +328,7 @@ erDiagram
 | --- | --- | --- |
 | `projects` | `teams` | `name`→`name`, `description` отбрасывается (нет колонки; при необходимости → `Q`). `leader_user_id` проставляется на шаге лидеров. |
 | `telegram_users` | `users` + `telegram_links` | `users.username='tg_'+telegram_id`, `password_hash=NULL`, `role='group_member'`. `telegram_links(telegram_user_id=telegram_id, user_id=new_id, dead_at=now() если !is_active)`. Маппинг `old telegram_users.id → new user_id`. |
-| `user_project_access` | `users.team_id` | Единственный проект → его команда; несколько → первый; осиротевшие (0 проектов) → служебная команда `Legacy` (`--orphan-team-name`). Multi-team не переносится (лишние доступы теряются — фиксируется в отчёте). |
+| `user_project_access` | `users.team_id` (+ `user_teams`) | Единственный проект → его команда; несколько → первый становится **домашней** (`users.team_id`); осиротевшие (0 проектов) → служебная команда `Legacy` (`--orphan-team-name`). Домашнее членство зеркалируется в `user_teams` (backfill ревизии `20260702_003`). **Перенос доп. проектных доступов в `user_teams`** технически возможен после [ADR-0012](./adr/ADR-0012-multi-team-membership.md), но one-off `migrate_sqlite_to_pg.py` на этой итерации по-прежнему берёт только первый проект как домашний (`TD-004`); лишние доступы фиксируются в отчёте. Донастройка доп. членств — вручную через membership-API либо будущим расширением скрипта. |
 | — (нет) | `teams.leader_user_id` | Лидер = `min(user_id)` среди участников команды; ему `role='group_leader'`. |
 | `twilio_numbers` | `phone_numbers` | `team_id←project_id`, `added_by_user_id←leader`. |
 | `inbound_messages` | `inbound_sms` | `team_id←project_id`, `raw_payload_json::jsonb`→`raw_payload`. `twilio_message_sid` сохраняется (partial-UNIQUE). |

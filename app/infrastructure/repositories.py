@@ -24,6 +24,7 @@ from shared.models import (
     Team,
     TelegramLink,
     User,
+    UserTeam,
 )
 
 _LAST_ERROR_MAX = 1000
@@ -72,12 +73,14 @@ class TeamRepository:
         await self._s.execute(delete(Team).where(Team.id == team_id))
 
     async def member_counts(self, team_ids: list[int]) -> dict[int, int]:
+        """Число участников по каждой команде — через членство ``user_teams``
+        (ADR-0012): включает и домашних, и доп. участников."""
         if not team_ids:
             return {}
         stmt = (
-            select(User.team_id, func.count())
-            .where(User.team_id.in_(team_ids))
-            .group_by(User.team_id)
+            select(UserTeam.team_id, func.count())
+            .where(UserTeam.team_id.in_(team_ids))
+            .group_by(UserTeam.team_id)
         )
         return {int(tid): int(cnt) for tid, cnt in (await self._s.execute(stmt)).all()}
 
@@ -107,6 +110,17 @@ class PhoneNumberRepository:
         stmt = (
             select(PhoneNumber)
             .where(PhoneNumber.team_id == team_id)
+            .order_by(PhoneNumber.created_at.desc())
+        )
+        return list((await self._s.execute(stmt)).scalars().all())
+
+    async def list_by_teams(self, team_ids: frozenset[int]) -> list[PhoneNumber]:
+        """Номера всех команд участника (scope.team_ids, ADR-0012)."""
+        if not team_ids:
+            return []
+        stmt = (
+            select(PhoneNumber)
+            .where(PhoneNumber.team_id.in_(team_ids))
             .order_by(PhoneNumber.created_at.desc())
         )
         return list((await self._s.execute(stmt)).scalars().all())
@@ -190,23 +204,50 @@ class UserRepository:
         return list((await self._s.execute(stmt)).scalars().all())
 
     async def list_by_team(self, team_id: int) -> list[User]:
-        stmt = select(User).where(User.team_id == team_id).order_by(User.id)
+        """Участники команды (членство ``user_teams``, ADR-0012) — home и доп."""
+        stmt = (
+            select(User)
+            .join(UserTeam, UserTeam.user_id == User.id)
+            .where(UserTeam.team_id == team_id)
+            .order_by(User.id)
+        )
         return list((await self._s.execute(stmt)).scalars().all())
 
     async def list_user_ids_in_team(self, team_id: int) -> list[int]:
-        stmt = select(User.id).where(User.team_id == team_id)
+        """id участников команды через членство ``user_teams`` (ADR-0012)."""
+        stmt = select(UserTeam.user_id).where(UserTeam.team_id == team_id)
         return [int(row[0]) for row in (await self._s.execute(stmt)).all()]
 
     async def count_in_team(self, team_id: int) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(UserTeam)
+            .where(UserTeam.team_id == team_id)
+        )
+        return int((await self._s.execute(stmt)).scalar_one())
+
+    async def count_home_members(self, team_id: int) -> int:
+        """Число пользователей с ДОМАШНЕЙ командой = team_id (users.team_id).
+
+        Используется disband-проверкой (docs/05 §5): «нет пользователей с
+        team_id = id». В отличие от ``count_in_team`` (членство user_teams),
+        считает только домашних — доп. участники расформированию не мешают
+        (их членство снимается CASCADE, ADR-0012)."""
         stmt = select(func.count()).select_from(User).where(User.team_id == team_id)
         return int((await self._s.execute(stmt)).scalar_one())
 
     async def recipients_for_team(self, team_id: int) -> list[Recipient]:
-        """Пары (user_id, telegram_user_id) для участников команды с живой привязкой."""
+        """Пары (user_id, telegram_user_id) для участников команды с живой привязкой.
+
+        Членство определяется через ``user_teams`` (ADR-0012): участник домашней
+        ИЛИ доп. команды получает SMS этой команды. ``handle_incoming_sms`` не
+        меняется.
+        """
         stmt = (
             select(User.id, TelegramLink.telegram_user_id)
+            .join(UserTeam, UserTeam.user_id == User.id)
             .join(TelegramLink, TelegramLink.user_id == User.id)
-            .where(User.team_id == team_id, TelegramLink.dead_at.is_(None))
+            .where(UserTeam.team_id == team_id, TelegramLink.dead_at.is_(None))
         )
         return [
             Recipient(user_id=int(uid), telegram_user_id=int(tg))
@@ -304,6 +345,83 @@ class UserRepository:
         )
         row = (await self._s.execute(stmt)).one()
         return int(row[0]), row[1]
+
+
+# --- User teams (M:N membership, ADR-0012) ----------------------------------
+
+
+class UserTeamRepository:
+    """Членство ``user_teams`` (ADR-0012). Источник истины видимости/адресации.
+
+    Чистый доступ к данным — бизнес-инварианты (home нельзя удалить, super_admin
+    нельзя добавить, лидера нельзя переносить) живут в сервисном слое.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._s = session
+
+    async def add(self, *, user_id: int, team_id: int) -> bool:
+        """Идемпотентная вставка членства. ``True`` — строка создана, ``False`` —
+        членство уже было (UNIQUE-конфликт, no-op)."""
+        stmt = (
+            pg_insert(UserTeam)
+            .values(user_id=user_id, team_id=team_id)
+            .on_conflict_do_nothing(index_elements=[UserTeam.user_id, UserTeam.team_id])
+            .returning(UserTeam.id)
+        )
+        return (await self._s.execute(stmt)).first() is not None
+
+    async def remove(self, *, user_id: int, team_id: int) -> bool:
+        """Удалить членство. ``True`` — строка удалена, ``False`` — не найдено."""
+        stmt = (
+            delete(UserTeam)
+            .where(UserTeam.user_id == user_id, UserTeam.team_id == team_id)
+            .returning(UserTeam.id)
+        )
+        return (await self._s.execute(stmt)).first() is not None
+
+    async def exists(self, *, user_id: int, team_id: int) -> bool:
+        stmt = select(UserTeam.id).where(
+            UserTeam.user_id == user_id, UserTeam.team_id == team_id
+        )
+        return (await self._s.execute(stmt)).first() is not None
+
+    async def list_team_ids_for_user(self, user_id: int) -> list[int]:
+        """Все команды пользователя (home + доп.)."""
+        stmt = (
+            select(UserTeam.team_id)
+            .where(UserTeam.user_id == user_id)
+            .order_by(UserTeam.team_id)
+        )
+        return [int(row[0]) for row in (await self._s.execute(stmt)).all()]
+
+    async def list_team_ids_for_users(
+        self, user_ids: list[int]
+    ) -> dict[int, list[int]]:
+        """Bulk-вариант: ``{user_id: [team_id, ...]}`` для группировки на /admin.
+
+        Пользователи без членств отсутствуют в отображении (вызывающий
+        подставляет пустой список)."""
+        if not user_ids:
+            return {}
+        stmt = (
+            select(UserTeam.user_id, UserTeam.team_id)
+            .where(UserTeam.user_id.in_(user_ids))
+            .order_by(UserTeam.user_id, UserTeam.team_id)
+        )
+        result: dict[int, list[int]] = {}
+        for row in (await self._s.execute(stmt)).all():
+            result.setdefault(int(row[0]), []).append(int(row[1]))
+        return result
+
+    async def list_user_ids_for_team(self, team_id: int) -> list[int]:
+        """id всех пользователей с членством в команде (для disband-ревокации)."""
+        stmt = (
+            select(UserTeam.user_id)
+            .where(UserTeam.team_id == team_id)
+            .order_by(UserTeam.user_id)
+        )
+        return [int(row[0]) for row in (await self._s.execute(stmt)).all()]
 
 
 # --- Telegram links ---------------------------------------------------------
