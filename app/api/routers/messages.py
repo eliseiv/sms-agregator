@@ -52,6 +52,50 @@ router = APIRouter(
 page_router = APIRouter(tags=["Messages UI"])
 
 
+def _clean_str(value: str | None) -> str | None:
+    """No-JS форма фильтра шлёт **пустые строки** для «Все номера»/«Все команды»
+    (`to_number=`, `team_id=`). Семантика пустого значения — «фильтр не задан»
+    (эквивалент отсутствию параметра), а НЕ фильтрация по `""` (иначе
+    `to_number=""` дал бы 0 результатов). Пустое/пробельное → ``None``.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _clean_opt_int(value: str | None) -> int | None:
+    """Опциональный целочисленный фильтр (`team_id`) из no-JS GET-формы.
+
+    FastAPI не может привести пустую строку `team_id=""` к ``int`` → строгий
+    `int | None`-параметр давал `422 validation_error` и ронял весь submit.
+    Принимаем строкой и приводим сами (паттерн референса: пустое/непарсимое →
+    ``None`` = фильтр не задан).
+    """
+    cleaned = _clean_str(value)
+    if cleaned is None:
+        return None
+    try:
+        return int(cleaned)
+    except ValueError:
+        return None
+
+
+def _clean_limit(value: str | None) -> int:
+    """`limit` из no-JS формы: пустая/непарсимая строка → ``DEFAULT_LIMIT``
+    (страница не падает `422` до хендлера). Валидное число (в т.ч. вне
+    диапазона `[1,100]`) уходит в сервис, который проверяет диапазон и отдаёт
+    `InvalidLimitError` → рендер `DEFAULT_LIMIT` (docs/05 §9).
+    """
+    cleaned = _clean_str(value)
+    if cleaned is None:
+        return DEFAULT_LIMIT
+    try:
+        return int(cleaned)
+    except ValueError:
+        return DEFAULT_LIMIT
+
+
 @router.get("")
 async def list_messages(
     db: DbSession,
@@ -91,12 +135,18 @@ async def messages_page(
     scope: CurrentScope,
     sess: CurrentSession,
     to_number: str | None = Query(default=None),
-    team_id: int | None = Query(default=None),
+    team_id: str | None = Query(default=None),
     cursor: str | None = Query(default=None),
-    limit: int = Query(default=DEFAULT_LIMIT),
+    limit: str | None = Query(default=None),
 ) -> Response:
     """SSR-страница просмотра SMS (все роли). Первая (или ``cursor``) страница
     рендерится server-side теми же правилами, что ``GET /api/messages``.
+
+    Query-параметры фильтра принимаются **строками** и валидируются здесь: своя
+    no-JS GET-форма шлёт пустые строки (`to_number=`, `team_id=`, `limit=`) для
+    состояний «Все номера»/«Все команды», а строгий `int`-параметр ронял их в
+    `422 validation_error` (docs/05 §9, no-JS fallback обязателен). Пустое =
+    «фильтр не задан» (не фильтрация по `""`).
 
     Битый ``cursor``/``limit`` в query (ADR-0014, docs/05 §9): страница
     показывает пустой список (без жёсткого 400) — API-семантика ошибок остаётся
@@ -105,15 +155,18 @@ async def messages_page(
     следующий submit были валидны; ``cursor`` при этом просто игнорируется.
     """
     is_super_admin = scope.is_super_admin
-    render_limit = limit
+    filter_to_number = _clean_str(to_number)
+    filter_team_id = _clean_opt_int(team_id) if is_super_admin else None
+    filter_cursor = _clean_str(cursor)
+    render_limit = _clean_limit(limit)
     try:
         page = await MessageQueryService(db).list_messages(
             is_super_admin=is_super_admin,
             team_ids=scope.team_ids,
-            to_number=to_number,
-            team_id=team_id if is_super_admin else None,
-            cursor=cursor,
-            limit=limit,
+            to_number=filter_to_number,
+            team_id=filter_team_id,
+            cursor=filter_cursor,
+            limit=render_limit,
         )
         messages = [serialize_message(sms) for sms in page.rows]
         next_cursor = page.next_cursor
@@ -152,8 +205,8 @@ async def messages_page(
         "numbers": numbers,
         "teams": teams,
         "is_super_admin": is_super_admin,
-        "to_number": to_number,
-        "team_id": team_id if is_super_admin else None,
+        "to_number": filter_to_number,
+        "team_id": filter_team_id,
         "limit": render_limit,
         "csrf_token": sess.csrf_token,
         "username": user.username,
