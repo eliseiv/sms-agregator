@@ -222,18 +222,25 @@
            data-teams='{{ teams | default([]) | tojson }}'>
     <div class="admin__group-head">
       <h2 id="grp-numbers-title" class="admin__group-title">Нераспределённые номера</h2>
-      <div class="admin-numbers__filter">
-        <label class="admin-numbers__filter-label" for="numbers-filter">Показать</label>
-        <select class="field__input field__input--compact" id="numbers-filter" data-numbers-filter>
-          <option value="unassigned" selected>Нераспределённые</option>
-          <option value="assigned">Распределённые</option>
-          <option value="all">Все</option>
-        </select>
+      <div class="admin-numbers__controls">
+        <button type="button"
+                class="btn btn--secondary btn--small"
+                data-numbers-sync>Синхронизировать из Twilio</button>
+        <div class="admin-numbers__filter">
+          <label class="admin-numbers__filter-label" for="numbers-filter">Показать</label>
+          <select class="field__input field__input--compact" id="numbers-filter" data-numbers-filter>
+            <option value="unassigned" selected>Нераспределённые</option>
+            <option value="assigned">Распределённые</option>
+            <option value="all">Все</option>
+          </select>
+        </div>
       </div>
     </div>
     <p class="admin__hint">
       Назначьте номеру команду — входящие SMS с него начнут доставляться её участникам.
     </p>
+    {# Статус синхронизации: обновляется admin_numbers.js, озвучивается скринридером. #}
+    <p class="admin-numbers__sync-status" data-numbers-sync-status role="status" aria-live="polite" hidden></p>
 
     {# Корневой контейнер: первичный рендер — SSR (unassigned_numbers).
        admin_numbers.js перерисовывает его при смене фильтра / после назначения

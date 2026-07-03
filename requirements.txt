@@ -4,6 +4,7 @@ gunicorn==23.0.0
 httpx==0.28.1
 socksio==1.0.0
 twilio==9.8.4
+requests>=2.31,<3
 SQLAlchemy[asyncio]==2.0.36
 asyncpg==0.30.0
 alembic==1.14.0

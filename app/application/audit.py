@@ -31,6 +31,7 @@ ALLOWED_ACTIONS: Final[frozenset[str]] = frozenset(
         "number_added",
         "number_removed",
         "number_team_assigned",
+        "numbers_synced",
         "telegram_link_created",
         "telegram_link_revoked",
         "telegram_link_dead_marked",

@@ -60,7 +60,10 @@
     user_not_in_team: 'Кандидат не является участником этой команды.',
     // numbers (docs/05 §4a)
     number_not_found: 'Номер не найден.',
-    invalid_query: 'Недопустимая комбинация фильтров.'
+    invalid_query: 'Недопустимая комбинация фильтров.',
+    // twilio sync (docs/05 §4a, ADR-0013)
+    twilio_error: 'Ошибка Twilio, попробуйте позже.',
+    twilio_not_configured: 'Twilio не настроен.'
   };
 
   function errorText(code, fallback) {

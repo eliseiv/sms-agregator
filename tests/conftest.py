@@ -55,6 +55,10 @@ os.environ.update(
         "ADMIN_PASSWORD": "admin-secret-pw",
         "COOKIE_SECURE": "false",
         "VERIFY_TWILIO_SIGNATURE": "false",
+        # Явно пустые Twilio-креды: тесты НЕ должны делать живой вызов Twilio API
+        # (локальный .env может содержать боевые значения). Twilio всегда мокается.
+        "TWILIO_ACCOUNT_SID": "",
+        "TWILIO_AUTH_TOKEN": "",
         "TELEGRAM_BOT_TOKEN": TEST_BOT_TOKEN,
         "TELEGRAM_PROXY_URL": "",
         "TELEGRAM_WEBHOOK_SECRET": "test-webhook-secret-xyz",

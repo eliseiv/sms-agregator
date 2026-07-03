@@ -180,6 +180,37 @@ class PhoneNumberRepository:
     async def delete(self, number_id: int) -> None:
         await self._s.execute(delete(PhoneNumber).where(PhoneNumber.id == number_id))
 
+    async def bulk_upsert_unassigned(
+        self, numbers: list[tuple[str, str | None]]
+    ) -> int:
+        """Идемпотентный батч-upsert номеров как unassigned (ADR-0013).
+
+        ``numbers`` — список ``(phone_number, label)`` (уже нормализованных и
+        дедуплицированных). Вставка ``team_id=NULL``, ``added_by_user_id=NULL``,
+        ``ON CONFLICT (phone_number) DO NOTHING`` — существующие (в т.ч.
+        назначенные командам) не трогаются. Возвращает число **реально
+        вставленных** строк (``RETURNING`` отдаёт только новые).
+        """
+        if not numbers:
+            return 0
+        rows = [
+            {
+                "phone_number": phone,
+                "team_id": None,
+                "added_by_user_id": None,
+                "label": label,
+            }
+            for phone, label in numbers
+        ]
+        stmt = (
+            pg_insert(PhoneNumber)
+            .values(rows)
+            .on_conflict_do_nothing(index_elements=[PhoneNumber.phone_number])
+            .returning(PhoneNumber.id)
+        )
+        result = await self._s.execute(stmt)
+        return len(result.fetchall())
+
 
 # --- Users ------------------------------------------------------------------
 

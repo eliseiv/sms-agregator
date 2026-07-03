@@ -210,6 +210,56 @@
     });
   }
 
+  /* ---- синхронизация номеров из Twilio (docs/05 §4a, ADR-0013) ----------- */
+
+  var syncBtn = section.querySelector('[data-numbers-sync]');
+  var syncStatus = section.querySelector('[data-numbers-sync-status]');
+
+  function setSyncStatus(text) {
+    if (!syncStatus) return;
+    if (text) {
+      syncStatus.textContent = text;
+      syncStatus.hidden = false;
+    } else {
+      syncStatus.textContent = '';
+      syncStatus.hidden = true;
+    }
+  }
+
+  if (syncBtn) {
+    syncBtn.addEventListener('click', function () {
+      syncBtn.disabled = true;
+      syncBtn.setAttribute('aria-busy', 'true');
+      setSyncStatus('Синхронизация с Twilio…');
+      SMS.csrfFetch('/api/admin/numbers/sync', { method: 'POST' })
+        .then(function (resp) {
+          if (!resp.ok) {
+            return SMS.readJsonError(resp).then(function (e) { throw new Error(e.message); });
+          }
+          return resp.json();
+        })
+        .then(function (data) {
+          var added = (data && typeof data.added === 'number') ? data.added : 0;
+          var skipped = (data && typeof data.skipped_existing === 'number') ? data.skipped_existing : 0;
+          var msg = 'Синхронизировано: добавлено ' + added + ', пропущено ' + skipped + ' (уже есть).';
+          SMS.flash(msg, 'success');
+          setSyncStatus(msg);
+          // Показываем нераспределённые, чтобы новые номера были видны сразу.
+          if (filterSelect) filterSelect.value = 'unassigned';
+          loadNumbers('unassigned');
+        })
+        .catch(function (e) {
+          var msg = (e && e.message) ? e.message : 'Не удалось синхронизировать номера.';
+          SMS.flash(msg, 'error');
+          setSyncStatus(msg);
+        })
+        .then(function () {
+          syncBtn.disabled = false;
+          syncBtn.removeAttribute('aria-busy');
+        });
+    });
+  }
+
   /* ---- назначение команды (делегирование submit) ------------------------ */
 
   function patchTeam(numberId, teamId, okText, onErr) {

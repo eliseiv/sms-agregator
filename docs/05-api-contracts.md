@@ -194,6 +194,15 @@
   - `404 {"error":"number_not_found"}`;
   - `404 {"error":"team_not_found"}` (переданный `team_id` не существует).
 
+### `POST /api/admin/numbers/sync`
+Источник — [ADR-0013](./adr/ADR-0013-on-demand-twilio-number-sync.md). On-demand подтягивание входящих номеров Twilio-аккаунта в `phone_numbers` как **unassigned**.
+- **Guard:** `require_admin` (только super_admin). **CSRF:** да (double-submit; есть сессия/`sms_csrf`). **Тело:** пустое.
+- **Логика:** через Twilio API (аутентификация `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` из конфига — те же секреты, что для подписи вебхука) получить **все** входящие номера аккаунта, пройдя **все страницы** (пагинация). Каждый E.164-номер нормализуется `normalize_phone`, upsert в `phone_numbers` как unassigned (`team_id = NULL`, `added_by_user_id = NULL`) идемпотентно `INSERT ... ON CONFLICT (phone_number) DO NOTHING`. Существующие номера (в т.ч. **назначенные командам**) НЕ трогаются — ни `team_id`, ни `label`, ни `added_by_user_id`. Авто-назначения нет: распределение по командам — по-прежнему через `PATCH /api/admin/numbers/{id}`. Twilio SDK синхронный — вызов из async-хендлера через threadpool/executor (реализация — на усмотрение backend, сверить с кодом проекта). Audit `numbers_synced` (`details = {synced_total, added, skipped_existing}`).
+- **Ответы:**
+  - `200 {"synced_total": <int>, "added": <int>, "skipped_existing": <int>}` — `synced_total` = получено номеров из Twilio (по всем страницам); `added` = реально вставлено новых; `skipped_existing` = `synced_total − added` (уже присутствовали).
+  - `502`/`503 {"error":"twilio_error"}` — сбой Twilio API (сеть, 5xx от Twilio, таймаут, ошибка аутентификации). Частичный прогресс не создаёт дублей (каждая вставка идемпотентна; повтор дособерёт).
+  - `503 {"error":"twilio_not_configured"}` — `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` не сконфигурированы.
+
 ---
 
 ## 5. Admin — команды
@@ -288,7 +297,8 @@
   - `teams: list[{id, name}]` — все команды (для select при создании/перемещении/добавлении членства); может быть пустым.
   - `csrf_token`, `is_super_admin: true`.
   - Данные согласованы с `GET /api/admin/users` (§4, те же поля + `team_ids` + порядок); группировка — представление того же набора. Отдельного grouping-API не вводится — SSR-инжект.
-- **Секция unassigned-номеров ([ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)):** сервер инжектирует `unassigned_numbers: list[{id, phone_number, label, is_active, created_at}]` (номера с `team_id IS NULL`) и `teams` (для выбора команды). На каждый номер — контрол назначения команды (select команды + submit), мутация через `PATCH /api/admin/numbers/{id}` `{team_id}` (§4a, CSRF double-submit, `_method=PATCH` для no-JS). Каноничный источник данных — `GET /api/admin/numbers?assignment=unassigned`; SSR-инжект — первичный рендер.
+- **Секция unassigned-номеров ([ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md), [ADR-0013](./adr/ADR-0013-on-demand-twilio-number-sync.md)):** сервер инжектирует `unassigned_numbers: list[{id, phone_number, label, is_active, created_at}]` (номера с `team_id IS NULL`) и `teams` (для выбора команды). На каждый номер — контрол назначения команды (select команды + submit), мутация через `PATCH /api/admin/numbers/{id}` `{team_id}` (§4a, CSRF double-submit, `_method=PATCH` для no-JS). Каноничный источник данных — `GET /api/admin/numbers?assignment=unassigned`; SSR-инжект — первичный рендер.
+  - **Кнопка «Синхронизировать из Twilio» ([ADR-0013](./adr/ADR-0013-on-demand-twilio-number-sync.md)):** в этой же секции — контрол, вызывающий `POST /api/admin/numbers/sync` (CSRF double-submit). После ответа `200 {synced_total, added, skipped_existing}` — показать результат (например «добавлено N, пропущено M») и **обновить список unassigned** (перезагрузка страницы/секции либо перезапрос `GET /api/admin/numbers?assignment=unassigned`). Ошибки `twilio_error`/`twilio_not_configured` (§4a) — показать флеш/сообщение, список не менять. Способ вызова (JS-fetch через `csrf.js` vs POST-форма) — на усмотрение frontend (сверить с кодом проекта); контракт — наличие кнопки и её привязка к endpoint'у.
 
 ### `GET /admin/teams`
 - **Guard:** `require_admin`. Jinja2-страница: список команд, создание/переименование/удаление, состав и лидер.
@@ -321,6 +331,7 @@
 | `/api/admin/users/{id}/teams` | POST | `require_admin` | да |
 | `/api/admin/users/{id}/teams/{team_id}` | DELETE (+ POST same-path `_method=DELETE`) | `require_admin` | да |
 | `/api/admin/numbers*` | GET/PATCH | `require_admin` | да |
+| `/api/admin/numbers/sync` | POST | `require_admin` | да ([ADR-0013](./adr/ADR-0013-on-demand-twilio-number-sync.md)) |
 | `/api/admin/teams*` | GET/POST/PATCH/DELETE | `require_admin` | да |
 | `/api/admin/teams/{id}/leader` | PATCH | `require_admin` | да |
 | `/api/numbers*` | GET/POST/DELETE | `require_authenticated` | да |
@@ -355,3 +366,5 @@
 | `invalid_query` | 400 | `GET /api/admin/numbers` | Несовместимые фильтры (`team_id` + `assignment=unassigned`). |
 | `number_not_found` | 404 | `PATCH /api/admin/numbers/{id}` | Номер не найден. |
 | `team_not_found` | 404 | `PATCH /api/admin/numbers/{id}`, `PATCH/POST /api/admin/users` | Переданный `team_id` не существует. |
+| `twilio_error` | 502/503 | `POST /api/admin/numbers/sync` | Сбой Twilio API при sync номеров (сеть/5xx/таймаут/аутентификация) — [ADR-0013](./adr/ADR-0013-on-demand-twilio-number-sync.md). |
+| `twilio_not_configured` | 503 | `POST /api/admin/numbers/sync` | `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` не заданы. |

@@ -15,9 +15,18 @@ from fastapi.responses import JSONResponse
 from app.api.deps import DbSession, require_admin
 from app.api.serializers import serialize_number
 from app.application.audit import AuditWriter
+from app.application.twilio_sync_service import (
+    SyncResult,
+    sync_twilio_numbers_to_pool,
+)
 from app.exceptions import ApiError, NotFoundError, ValidationError
 from app.infrastructure.rate_limit import client_ip
 from app.infrastructure.repositories import PhoneNumberRepository, TeamRepository
+from app.infrastructure.twilio_numbers import (
+    TwilioNotConfiguredError,
+    TwilioNumbersApiError,
+    get_twilio_numbers_client,
+)
 
 router = APIRouter(
     prefix="/api/admin/numbers",
@@ -134,5 +143,61 @@ async def assign_number_team(
             "phone_number": number.phone_number,
             "team_id": new_team_id,
             "team_name": team_name,
+        }
+    )
+
+
+@router.post("/sync")
+async def sync_numbers(request: Request, db: DbSession) -> JSONResponse:
+    """On-demand sync входящих номеров Twilio в unassigned-пул (ADR-0013, §4a).
+
+    ``require_admin`` (router-level) + CSRF (middleware). Тянет все номера
+    аккаунта (пагинация), upsert как unassigned ``ON CONFLICT DO NOTHING``.
+    """
+    client = get_twilio_numbers_client()
+    if not client.is_configured:
+        raise ApiError(
+            "twilio_not_configured",
+            "TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN не сконфигурированы",
+            status_code=503,
+        )
+
+    actor_id = _actor_id(request)
+    ip = client_ip(request)
+    ua = request.headers.get("user-agent", "")
+
+    async def _audit(result: SyncResult) -> None:
+        await AuditWriter(db).log(
+            actor_user_id=actor_id,
+            action="numbers_synced",
+            details={
+                "synced_total": result.synced_total,
+                "added": result.added,
+                "skipped_existing": result.skipped_existing,
+            },
+            ip=ip,
+            user_agent=ua,
+        )
+
+    try:
+        result = await sync_twilio_numbers_to_pool(db, client, audit=_audit)
+    except TwilioNotConfiguredError as exc:
+        raise ApiError(
+            "twilio_not_configured",
+            "TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN не сконфигурированы",
+            status_code=503,
+        ) from exc
+    except TwilioNumbersApiError as exc:
+        raise ApiError(
+            "twilio_error",
+            "Сбой Twilio API при синхронизации номеров",
+            status_code=502,
+        ) from exc
+
+    return JSONResponse(
+        content={
+            "synced_total": result.synced_total,
+            "added": result.added,
+            "skipped_existing": result.skipped_existing,
         }
     )

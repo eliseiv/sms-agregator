@@ -2,7 +2,7 @@
 
 СУБД — **PostgreSQL 16**. Кодировка UTF-8. Все временные поля — `TIMESTAMPTZ` в UTC. Все PK — `BIGINT` (`BIGSERIAL`/identity). JSONB для сырых payload'ов.
 
-Источники решений: [ADR-0001](./adr/ADR-0001-postgres-sqlalchemy-async.md) (стек/схема), [ADR-0003](./adr/ADR-0003-roles-and-teams.md) (роли/команды), [ADR-0004](./adr/ADR-0004-telegram-mini-app-sso.md) (`telegram_links`), [ADR-0005](./adr/ADR-0005-sms-addressing-via-team.md) (адресация), [ADR-0006](./adr/ADR-0006-data-migration-sqlite-to-pg.md) (миграция), [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md) (unassigned-номера: `phone_numbers.team_id` NULLABLE + `ON DELETE SET NULL`), [ADR-0012](./adr/ADR-0012-multi-team-membership.md) (multi-team: аддитивная M:N `user_teams`, `users.team_id` = домашняя команда).
+Источники решений: [ADR-0001](./adr/ADR-0001-postgres-sqlalchemy-async.md) (стек/схема), [ADR-0003](./adr/ADR-0003-roles-and-teams.md) (роли/команды), [ADR-0004](./adr/ADR-0004-telegram-mini-app-sso.md) (`telegram_links`), [ADR-0005](./adr/ADR-0005-sms-addressing-via-team.md) (адресация), [ADR-0006](./adr/ADR-0006-data-migration-sqlite-to-pg.md) (миграция), [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md) (unassigned-номера: `phone_numbers.team_id` NULLABLE + `ON DELETE SET NULL`), [ADR-0012](./adr/ADR-0012-multi-team-membership.md) (multi-team: аддитивная M:N `user_teams`, `users.team_id` = домашняя команда), [ADR-0013](./adr/ADR-0013-on-demand-twilio-number-sync.md) (on-demand sync номеров из Twilio как unassigned — без изменений схемы, только enum `admin_audit.action += numbers_synced`).
 
 Общие конвенции: `created_at`/`updated_at` — `TIMESTAMPTZ NOT NULL DEFAULT now()`; триггер `set_updated_at()` (BEFORE UPDATE) обновляет `updated_at`; частичные индексы по `is_active`/`dead_at`.
 
@@ -220,6 +220,8 @@ erDiagram
 
 **Инвариант unassigned (нормативно):** `team_id IS NULL` — легитимное состояние (пул). SMS на unassigned-номер обрабатывается как неизвестный: `inbound_sms.team_id = phone.team_id = NULL` → получателей нет (см. [03-architecture.md](./03-architecture.md) §«Поток приёма»). Инвариант «у номера всегда есть команда» снят [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md).
 
+**Наполнение пула ([ADR-0013](./adr/ADR-0013-on-demand-twilio-number-sync.md)):** unassigned-номера появляются тремя идемпотентными путями с общим примитивом `INSERT ... ON CONFLICT (phone_number) DO NOTHING` (естественный ключ — `phone_number`): (1) ручное `POST /api/numbers` (в команду участника); (2) one-off импорт из легаси-SQLite `scripts/import_numbers.py` ([ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md) §7); (3) **on-demand sync из Twilio-аккаунта** — `POST /api/admin/numbers/sync` и CLI `scripts/sync_twilio_numbers.py` (`team_id = NULL`, `added_by_user_id = NULL`). Во всех случаях `ON CONFLICT DO NOTHING` **не трогает** существующие строки — назначенные командам номера (`team_id IS NOT NULL`) остаются неизменными. **Колонка `source`/`provider` не вводится** — источник различается по факту наличия, для текущих сценариев провайдер в схеме не нужен.
+
 ---
 
 ### `inbound_sms` (было: `inbound_messages`)
@@ -269,7 +271,7 @@ erDiagram
 | --- | --- | --- | --- |
 | `id` | BIGSERIAL | PK | |
 | `actor_user_id` | BIGINT | NOT NULL | id действующего (обычно super_admin). **Без FK** — запись переживает удаление пользователя. |
-| `action` | TEXT | NOT NULL | Enum-string: `admin_login`, `admin_logout`, `create_user`, `reset_password`, `delete_user`, `lockout_triggered`, `team_create`, `team_rename`, `team_delete`, `team_leader_set`, `user_team_change` (смена домашней команды — `PATCH user`), `user_team_add` / `user_team_remove` (доп. членство — [ADR-0012](./adr/ADR-0012-multi-team-membership.md)), `number_added`, `number_removed`, `number_team_assigned` (admin назначил/снял команду у номера — [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)), `telegram_link_created`, `telegram_link_revoked`, `telegram_link_dead_marked`, `telegram_link_rebound`. |
+| `action` | TEXT | NOT NULL | Enum-string: `admin_login`, `admin_logout`, `create_user`, `reset_password`, `delete_user`, `lockout_triggered`, `team_create`, `team_rename`, `team_delete`, `team_leader_set`, `user_team_change` (смена домашней команды — `PATCH user`), `user_team_add` / `user_team_remove` (доп. членство — [ADR-0012](./adr/ADR-0012-multi-team-membership.md)), `number_added`, `number_removed`, `number_team_assigned` (admin назначил/снял команду у номера — [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)), `numbers_synced` (on-demand sync номеров из Twilio как unassigned; `details = {synced_total, added, skipped_existing}` — [ADR-0013](./adr/ADR-0013-on-demand-twilio-number-sync.md)), `telegram_link_created`, `telegram_link_revoked`, `telegram_link_dead_marked`, `telegram_link_rebound`. |
 | `target_user_id` | BIGINT | NULL | Затронутый пользователь. |
 | `target_username` | TEXT | NULL | Снимок username (на случай delete). |
 | `details` | JSONB | NULL | Структурированные детали (`{telegram_user_id, team_id, phone_number, ...}`). |

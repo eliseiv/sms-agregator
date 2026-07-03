@@ -41,7 +41,7 @@ app/
       auth.py                # /login, /login/password, /set-password, /logout
       telegram_auth.py       # POST /api/telegram/auth (Mini App SSO)
       telegram_webhook.py    # POST /api/telegram/webhook (только /start → web_app-кнопка; секрет-токен) — ADR-0010
-      admin.py               # /api/admin/users (+ /users/{id}/teams add/remove членства — ADR-0012), /api/admin/numbers (list/allocate — ADR-0009), /api/admin/teams, /api/admin/teams/{id}/leader (set_leader)
+      admin.py               # /api/admin/users (+ /users/{id}/teams add/remove членства — ADR-0012), /api/admin/numbers (list/allocate — ADR-0009; POST /numbers/sync on-demand Twilio-sync — ADR-0013), /api/admin/teams, /api/admin/teams/{id}/leader (set_leader)
       admin_ui.py            # GET /admin, /admin/teams (SSR)
       landing.py             # GET / (диспетчер по роли), GET /app (SSR landing участника/лидера) — ADR-0008
       numbers.py             # /api/numbers CRUD
@@ -70,6 +70,7 @@ app/
 scripts/
   migrate_sqlite_to_pg.py    # one-off полная миграция данных (ADR-0006)
   import_numbers.py          # one-off импорт номеров из SQLite как unassigned (ADR-0009)
+  sync_twilio_numbers.py     # one-off/CLI on-demand sync входящих номеров Twilio-аккаунта как unassigned (ADR-0013; общий механизм с POST /api/admin/numbers/sync)
 ```
 
 ## Порядок middleware
@@ -246,12 +247,49 @@ flowchart TD
 
 Контракт SSR-контекста `/admin` (набор `team_sections`, из которого строится banding) — [05-api-contracts.md](./05-api-contracts.md) §7. Отдельный ADR не заводится (UI-презентация, схема не затронута).
 
+## On-demand sync номеров из Twilio (ADR-0013)
+
+По требованию (не по расписанию) super_admin наполняет unassigned-пул входящими номерами Twilio-аккаунта. Тот же механизм доступен как HTTP-endpoint и как CLI-скрипт (общая сервис-функция, единое поведение).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as super_admin (/admin)
+    participant EP as admin.py POST /api/admin/numbers/sync
+    participant TW as Twilio API (IncomingPhoneNumbers)
+    participant DB as PostgreSQL
+
+    A->>EP: POST /api/admin/numbers/sync (CSRF)
+    EP->>EP: require_admin; проверка TWILIO_ACCOUNT_SID/AUTH_TOKEN
+    alt креды не заданы
+        EP-->>A: 503 twilio_not_configured
+    else
+        EP->>TW: list incoming numbers (все страницы — пагинация)
+        Note over EP,TW: синхронный Twilio SDK → вызов через threadpool/executor (сверить с кодом проекта)
+        alt сбой/таймаут Twilio
+            EP-->>A: 502/503 twilio_error
+        else получено N номеров
+            loop каждый номер (E.164)
+                EP->>EP: normalize_phone
+                EP->>DB: INSERT phone_numbers(team_id=NULL, added_by_user_id=NULL) ON CONFLICT (phone_number) DO NOTHING
+            end
+            EP->>DB: admin_audit(numbers_synced, details={synced_total, added, skipped_existing})
+            EP-->>A: 200 {synced_total, added, skipped_existing}
+        end
+    end
+```
+
+- **Никакого авто-назначения:** номера ложатся только в пул (`team_id = NULL`); распределение по командам — прежним `PATCH /api/admin/numbers/{id}` ([ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)).
+- **Идемпотентность / неприкосновенность:** `ON CONFLICT (phone_number) DO NOTHING` — назначенные командам и уже существующие номера не изменяются; повтор безопасен. Тот же примитив, что у `import_numbers.py` (см. [04-data-model.md](./04-data-model.md) §`phone_numbers` «Наполнение пула»).
+- **Реализация Twilio-клиента** (REST-клиент SDK, вынос синхронного вызова в executor, обработка пагинации/ошибок в `twilio_error`) — зона backend, детали — сверить с кодом проекта; ADR/архитектура фиксируют контракт и семантику, не внутренний метод.
+- Контракт endpoint — [05-api-contracts.md](./05-api-contracts.md) §4a; эксплуатация CLI `scripts/sync_twilio_numbers.py` — [07-deployment.md](./07-deployment.md).
+
 ## Что удаляется из текущего кода
 
 - `app/infrastructure/db.py` (sqlite `Database`, глобальный `db`), синхронные `Sqlite*Repository`.
 - Long polling: `telegram_polling_loop`, `handle_telegram_command`, команды `/my_projects`/`/numbers`. **`/start` не удаляется**, а переносится в webhook-обработчик `POST /api/telegram/webhook` (только кнопка Mini App, [ADR-0010](./adr/ADR-0010-telegram-webhook-and-new-bot.md)).
 - Автогенерация проектов/номеров: `_get_or_create_auto_project`, `ensure_all_users_have_project`, `_ensure_number_mapping`, `upsert_user`.
-- `twilio_numbers_sync_loop` — отключается для MVP.
+- `twilio_numbers_sync_loop` (фоновой авто-sync + авто-привязка) — **удаляется**. Заменяется **on-demand** sync без авто-назначения ([ADR-0013](./adr/ADR-0013-on-demand-twilio-number-sync.md)): `POST /api/admin/numbers/sync` + CLI `scripts/sync_twilio_numbers.py`. См. §«On-demand sync номеров из Twilio» ниже; env `TWILIO_NUMBERS_SYNC_ENABLED`/`_INTERVAL_SECONDS` удаляются ([07-deployment.md](./07-deployment.md) §«Удаляемые»).
 - HTTP Basic / `X-Admin-Token` авторизация admin-API.
 
 Маппинг старых сущностей на новые — [04-data-model.md](./04-data-model.md) §«Маппинг SQLite → PostgreSQL».

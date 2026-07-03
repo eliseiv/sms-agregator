@@ -136,6 +136,19 @@ docker compose run --rm app python -m scripts.import_numbers \
 
 Идемпотентен: `INSERT ... ON CONFLICT (phone_number) DO NOTHING` — повторный прогон не создаёт дублей и не перезаписывает уже назначенные номера. Печатает отчёт: прочитано / вставлено / пропущено (конфликт). После импорта super_admin распределяет номера по командам через `/admin` (секция unassigned) → `PATCH /api/admin/numbers/{id}`. Проверки — [06-testing-strategy.md](./06-testing-strategy.md) §21.
 
+## On-demand sync номеров из Twilio-аккаунта
+
+Источник — [ADR-0013](./adr/ADR-0013-on-demand-twilio-number-sync.md). В отличие от импорта из SQLite (выше), тянет **входящие номера Twilio-аккаунта** через Twilio API и upsert'ит их в `phone_numbers` как **unassigned** (`team_id=NULL`, `added_by_user_id=NULL`). Два эквивалентных пути (общий механизм):
+
+- **Из UI (штатно):** super_admin на `/admin` → секция номеров → кнопка «Синхронизировать из Twilio» → `POST /api/admin/numbers/sync` ([05-api-contracts.md](./05-api-contracts.md) §4a). Ответ `{synced_total, added, skipped_existing}`.
+- **CLI (one-off на сервере):**
+  ```
+  docker compose run --rm app python -m scripts.sync_twilio_numbers --database-url "$DATABASE_URL"
+  ```
+  Аутентификация в Twilio — по `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` из окружения (те же секреты, что для проверки подписи вебхука; отдельных env не требуется). Проходит все страницы (пагинация), идемпотентен (`ON CONFLICT (phone_number) DO NOTHING` — назначенные командам номера не трогаются), печатает счётчики `synced_total / added / skipped_existing`.
+
+После sync номера — в unassigned-пуле; распределение по командам — через `/admin` → `PATCH /api/admin/numbers/{id}`. Авто-назначения нет (осознанно, [ADR-0013](./adr/ADR-0013-on-demand-twilio-number-sync.md); заменяет удалённый фоновой `twilio_numbers_sync_loop`). Проверки — [06-testing-strategy.md](./06-testing-strategy.md) §26a–26f.
+
 ## Одноразовые операции Telegram (webhook / меню / домен)
 
 Источник — [ADR-0010](./adr/ADR-0010-telegram-webhook-and-new-bot.md). Выполняются один раз при развёртывании нового бота (вне CD-цикла), после того как `app` доступен по `https://novirell.shop`:

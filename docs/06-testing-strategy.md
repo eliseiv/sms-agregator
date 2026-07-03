@@ -65,6 +65,15 @@
 25. `PATCH /api/admin/numbers/{id}` `{team_id: T}` → номер привязан (audit `number_team_assigned`); `{team_id: null}` → снят (unassigned); несуществующий номер → `404 number_not_found`; несуществующая команда → `404 team_not_found`; не-админ → `403`.
 26. **Удаление команды сохраняет номера:** команда с номерами → `DELETE /api/admin/teams/{id}` (после опустошения от пользователей) → номера получают `team_id=NULL`, не удалены.
 
+### Admin — on-demand sync номеров из Twilio ([ADR-0013](./adr/ADR-0013-on-demand-twilio-number-sync.md))
+Twilio-клиент замокан (без реального сетевого вызова); проверяется поведение хендлера/сервиса.
+26a. **Sync добавляет unassigned.** Мок Twilio возвращает набор E.164-номеров, часть отсутствует в БД → `POST /api/admin/numbers/sync` (super_admin, CSRF) → `200 {synced_total, added, skipped_existing}`; новые строки `phone_numbers` с `team_id=NULL`, `added_by_user_id=NULL`; номера нормализованы (`normalize_phone`), `UNIQUE(phone_number)` соблюдён; audit `numbers_synced` c `details={synced_total, added, skipped_existing}`.
+26b. **Идемпотентность / skip existing.** Повторный `POST .../sync` тем же набором → `added=0`, `skipped_existing=synced_total`, дублей нет. **Назначенный команде номер не трогается:** номер, уже привязанный к команде (`team_id=T`), присутствует в ответе Twilio → после sync его `team_id` остаётся `T` (не обнулён), `label`/`added_by_user_id` не изменены (`ON CONFLICT DO NOTHING`).
+26c. **Пагинация.** Мок Twilio отдаёт номера **несколькими страницами** → sync собирает **все** страницы (`synced_total` = сумма по страницам), ни одна не потеряна.
+26d. **`twilio_error`.** Мок Twilio бросает ошибку/таймаут → `502`/`503 {"error":"twilio_error"}`; секреты не в логах; частичный прогон не создаёт дублей (повтор безопасен). При незаданных `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` → `503 {"error":"twilio_not_configured"}` (Twilio не вызывается).
+26e. **Только super_admin.** `group_member`/`group_leader` → `403`; аноним → `401`/redirect; без CSRF-токена при активной сессии → отклонение (double-submit). Никаких авто-назначений: после sync все новые номера — в unassigned-пуле, доставок по ним нет до `PATCH /api/admin/numbers/{id}`.
+26f. **CLI-паритет.** `scripts/sync_twilio_numbers.py` (мок Twilio) даёт тот же результат, что endpoint: upsert unassigned, идемпотентность, счётчики в отчёте.
+
 ### Telegram webhook (Задача 3, [ADR-0010](./adr/ADR-0010-telegram-webhook-and-new-bot.md))
 27. `POST /api/telegram/webhook` с верным `X-Telegram-Bot-Api-Secret-Token` и `message.text="/start"` → `200`; мок `send_message` вызван с `chat_id` и кнопкой `web_app` (url=`TELEGRAM_WEBAPP_URL`).
 28. Неверный/отсутствующий секрет-токен → `403 invalid_webhook_secret`, `send_message` не вызван, тело не обрабатывается.
