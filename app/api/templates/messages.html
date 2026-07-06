@@ -174,58 +174,8 @@
     </div>
   {% endif %}
 
-  {# --- Никнеймы номеров (docs/05 §6/§9; прямое требование заказчика) -------
-     Контрол «задать/изменить никнейм» на /messages для ВСЕХ ролей. Источник
-     списка — уже инжектированный ролевой набор numbers (super_admin — все;
-     участник — номера своих команд). Мутация — PATCH /api/numbers/{id} {label};
-     пустое поле → затирание (label=NULL, §6). no-JS fallback: POST на тот же
-     путь ресурса + _method=PATCH + label + csrf_token (MethodOverride whitelist
-     ^/api/numbers/\d+$). messages.js перехватывает submit и сохраняет без
-     перезагрузки, обновляя эффективный лейбл в строках сообщений и в фильтре. #}
-  <details class="numbers-nick" data-numbers-nick>
-    <summary class="numbers-nick__summary">Никнеймы номеров</summary>
-    <p class="field__hint">
-      Задайте номеру никнейм — он покажется рядом с номером в списке сообщений и в
-      фильтре. Оставьте поле пустым и сохраните, чтобы убрать никнейм.
-    </p>
-    {% if sel_numbers %}
-      <ul class="numbers-nick__list">
-        {% for n in sel_numbers %}
-          <li class="numbers-nick__item">
-            <form class="inline-form numbers-nick__form"
-                  method="POST"
-                  action="/api/numbers/{{ n.id }}"
-                  data-number-nick-form
-                  data-number-id="{{ n.id }}"
-                  data-phone="{{ n.phone_number | e }}">
-              {{ m.csrf_input() }}
-              <input type="hidden" name="_method" value="PATCH">
-              <span class="numbers-nick__phone">{{ n.phone_number | e }}</span>
-              {% if is_admin and n.team_name %}
-                <span class="numbers-nick__team admin-users-table__muted">{{ n.team_name | e }}</span>
-              {% endif %}
-              <label class="visually-hidden" for="nick-{{ n.id }}">Никнейм номера {{ n.phone_number | e }}</label>
-              <input class="field__input field__input--compact"
-                     id="nick-{{ n.id }}"
-                     name="label"
-                     type="text"
-                     maxlength="100"
-                     value="{{ n.label | default('') | e }}"
-                     placeholder="Никнейм"
-                     autocomplete="off"
-                     data-number-nick-input>
-              <button type="submit" class="btn btn--secondary btn--small" data-number-nick-save>Сохранить</button>
-            </form>
-          </li>
-        {% endfor %}
-      </ul>
-    {% else %}
-      <div class="admin__empty admin__empty--inline" role="status">
-        <p>Доступных номеров нет.</p>
-        <p class="field__hint">Никнеймы можно задавать номерам ваших команд.</p>
-      </div>
-    {% endif %}
-  </details>
+  {# Никнейм номера задаётся на отдельной странице «Номера» (/numbers). Здесь он
+     только ОТОБРАЖАЕТСЯ в строке сообщения (эффективный лейбл, карта _nl). #}
 
   {# --- Данные для JS (CSP-safe: JSON-остров, без inline-обработчиков) --- #}
   <script type="application/json" data-messages-config>

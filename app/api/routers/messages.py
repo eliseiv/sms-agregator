@@ -213,3 +213,51 @@ async def messages_page(
         "display_name": user.display_name,
     }
     return await render(request, "messages.html", context)
+
+
+# --- Страница «Номера» -------------------------------------------------------
+# Управление номерами: никнейм (label), перенос в другую команду (super_admin),
+# удаление. Контрол никнейма перенесён сюда с /messages (требование заказчика).
+# Ролевой набор: super_admin — все номера; участник — номера своих команд.
+@page_router.get(
+    "/numbers",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_authenticated)],
+)
+async def numbers_page(
+    request: Request,
+    db: DbSession,
+    scope: CurrentScope,
+    sess: CurrentSession,
+) -> Response:
+    """SSR-страница управления номерами (все роли).
+
+    Мутации — существующие endpoints: ``PATCH /api/numbers/{id}`` (никнейм, §6),
+    ``DELETE /api/numbers/{id}`` (удаление, §6), ``PATCH /api/admin/numbers/{id}``
+    (перенос в команду — только super_admin, §4a). Набор номеров ролевой:
+    super_admin — все; участник/лидер — номера своих команд.
+    """
+    numbers_repo = PhoneNumberRepository(db)
+    teams_repo = TeamRepository(db)
+    team_map = {t.id: t.name for t in await teams_repo.list_all()}
+    if scope.is_super_admin:
+        rows = await numbers_repo.list_all()
+        teams_ctx = [{"id": tid, "name": name} for tid, name in team_map.items()]
+        teams_ctx.sort(key=lambda t: str(t["name"]))
+    elif scope.team_ids:
+        rows = await numbers_repo.list_by_teams(scope.team_ids)
+        teams_ctx = []
+    else:
+        rows = []
+        teams_ctx = []
+    numbers = [
+        serialize_number(n, team_map.get(n.team_id) if n.team_id is not None else None)
+        for n in rows
+    ]
+    context: dict[str, Any] = {
+        "numbers": numbers,
+        "teams": teams_ctx,
+        "is_super_admin": scope.is_super_admin,
+        "csrf_token": sess.csrf_token,
+    }
+    return await render(request, "numbers.html", context)

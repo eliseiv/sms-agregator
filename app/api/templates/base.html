@@ -35,8 +35,9 @@
           {% else %}
             <a class="topnav__link{% if request.url.path == '/app' %} topnav__link--active{% endif %}" href="/app">Мои номера</a>
           {% endif %}
-          {# «Сообщения» — для всех аутентифицированных ролей (docs/05 §9, ADR-0014). #}
+          {# «Сообщения» / «Номера» — для всех аутентифицированных ролей. #}
           <a class="topnav__link{% if request.url.path == '/messages' %} topnav__link--active{% endif %}" href="/messages">Сообщения</a>
+          <a class="topnav__link{% if request.url.path == '/numbers' %} topnav__link--active{% endif %}" href="/numbers">Номера</a>
         </nav>
         <div class="topbar__user">
           <span class="topbar__username" title="Текущий пользователь">

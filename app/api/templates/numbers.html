@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+
+{# ---------------------------------------------------------------------------
+   numbers.html — страница «Номера» (управление номерами). Сюда перенесён
+   контрол никнейма с /messages. Ролевой набор из контекста (backend):
+     - numbers        : список сериализованных номеров (serialize_number:
+                        {id, phone_number, team_id, team_name, label, is_active,...});
+                        super_admin — все, участник — номера своих команд;
+     - teams          : команды {id, name} для селектора переноса (super_admin);
+     - is_super_admin : bool — показывать ли «Перенести в другую команду»;
+     - csrf_token     : для форм.
+
+   Мутации — существующие endpoints (no-JS: POST + _method + csrf; JS —
+   numbers_page.js перехватывает и перезагружает):
+     - никнейм  : PATCH  /api/numbers/{id}        {label}     (все роли, свои)
+     - удаление : DELETE /api/numbers/{id}                    (все роли, свои)
+     - перенос  : PATCH  /api/admin/numbers/{id}  {team_id}   (super_admin)
+   CSP-safe: без inline-обработчиков; данные — из атрибутов; JS — внешний файл.
+   --------------------------------------------------------------------------- #}
+
+{%- set sel_numbers = numbers if (numbers is defined and numbers) else [] -%}
+{%- set sel_teams   = teams if (teams is defined and teams) else [] -%}
+{%- set is_admin    = true if (is_super_admin is defined and is_super_admin) else false -%}
+
+{% block title %}Номера &middot; SMS Агрегатор{% endblock %}
+{% block body_class %}numbers-page{% endblock %}
+
+{% block content %}
+<section class="landing" aria-labelledby="numbers-heading">
+  <header class="landing__header">
+    <h1 id="numbers-heading" class="landing__title">Номера</h1>
+    <p class="landing__subtitle">
+      {% if is_admin %}
+        Все номера системы. Задайте никнейм, перенесите номер в другую команду или удалите его.
+      {% else %}
+        Номера ваших команд. Задайте никнейм или удалите номер.
+      {% endif %}
+    </p>
+  </header>
+
+  {% if sel_numbers %}
+  <div class="table-wrapper">
+    <table class="numbers-table">
+      <thead>
+        <tr>
+          <th scope="col">Номер</th>
+          <th scope="col">Никнейм</th>
+          <th scope="col">Команда</th>
+          <th scope="col">Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for n in sel_numbers %}
+          <tr class="numbers-table__row{% if not n.is_active %} numbers-table__row--disabled{% endif %}"
+              data-number-row data-number-id="{{ n.id }}">
+            <td class="numbers-table__phone">
+              {{ n.phone_number | e }}
+              {% if not n.is_active %}<span class="admin-user__warn">отключён</span>{% endif %}
+            </td>
+
+            {# --- Никнейм (Изменить): PATCH /api/numbers/{id} {label} --- #}
+            <td class="numbers-table__nick">
+              <form class="inline-form" method="POST" action="/api/numbers/{{ n.id }}"
+                    data-number-action="nick" data-phone="{{ n.phone_number | e }}">
+                {{ m.csrf_input() }}
+                <input type="hidden" name="_method" value="PATCH">
+                <label class="visually-hidden" for="nick-{{ n.id }}">Никнейм номера {{ n.phone_number | e }}</label>
+                <input class="field__input field__input--compact"
+                       id="nick-{{ n.id }}" name="label" type="text" maxlength="100"
+                       value="{{ n.label | default('') | e }}" placeholder="Никнейм" autocomplete="off">
+                <button type="submit" class="btn btn--secondary btn--small">Изменить</button>
+              </form>
+            </td>
+
+            {# --- Команда --- #}
+            <td class="numbers-table__team">
+              {% if n.team_name %}
+                <span class="team-chip"><span class="team-chip__name">{{ n.team_name | e }}</span></span>
+              {% else %}
+                <span class="admin-users-table__muted">— без команды</span>
+              {% endif %}
+            </td>
+
+            {# --- Действия: перенос (super_admin) + удаление --- #}
+            <td class="numbers-table__actions">
+              {% if is_admin %}
+              <form class="inline-form" method="POST" action="/api/admin/numbers/{{ n.id }}"
+                    data-number-action="move">
+                {{ m.csrf_input() }}
+                <input type="hidden" name="_method" value="PATCH">
+                <label class="visually-hidden" for="move-{{ n.id }}">Перенести номер {{ n.phone_number | e }} в другую команду</label>
+                <select class="field__input field__input--compact" id="move-{{ n.id }}" name="team_id">
+                  <option value=""{% if n.team_id is none %} selected{% endif %}>— без команды</option>
+                  {% for t in sel_teams %}
+                    <option value="{{ t.id }}"{% if t.id == n.team_id %} selected{% endif %}>{{ t.name | e }}</option>
+                  {% endfor %}
+                </select>
+                <button type="submit" class="btn btn--secondary btn--small">Перенести</button>
+              </form>
+              {% endif %}
+
+              <form class="inline-form" method="POST" action="/api/numbers/{{ n.id }}"
+                    data-number-action="delete" data-phone="{{ n.phone_number | e }}">
+                {{ m.csrf_input() }}
+                <input type="hidden" name="_method" value="DELETE">
+                <button type="submit" class="btn btn--danger btn--small">Удалить</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="admin__empty" role="status">
+    <p>Доступных номеров нет.</p>
+    <p class="field__hint">
+      {% if is_admin %}
+        Синхронизируйте номера из Twilio на странице «Пользователи» или добавьте их в командах.
+      {% else %}
+        Номера ваших команд появятся здесь. Добавить номер можно на странице «Мои номера».
+      {% endif %}
+    </p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/numbers_page.js?v={{ static_v }}"></script>
+{% endblock %}
