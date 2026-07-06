@@ -124,9 +124,16 @@
 - **Сортировка (нормативно, для группировки на `/admin`):** записи упорядочены так, чтобы клиент/SSR мог сгруппировать без доп. запросов — сначала `super_admin` (сортировка по `username`), затем пользователи по **домашней** команде (`team_name ASC`, `team_id ASC` для стабильности); внутри команды — лидер первым (`is_leader DESC`), затем участники по `username ASC`. Порядок — контракт (QA проверяет). Доп. членства (`team_ids`) выводятся из `user_teams` и раскладываются по секциям на этапе SSR-группировки (см. §7): пользователь показывается в каждой своей команде, home помечен.
 
 ### `POST /api/admin/users`
-- **Тело (JSON):** `{"username": str, "display_name": str|null, "team_id": int}`. **`team_id` обязателен** — создаваемый пользователь получает роль `group_member`/`group_leader`, для которой CHECK `users_role_team_invariant` требует `team_id IS NOT NULL` ([04-data-model.md](./04-data-model.md)). Создать пользователя «без команды» нельзя (роль `super_admin` не создаётся через этот endpoint — он seed-only).
-- **Логика:** `create_user` — `username` (lower, уникальный), `password_hash=NULL`, `password_reset_required=true`. Пользователь добавляется в команду `team_id` в **одной транзакции** (deferred constraints): срабатывает правило «первый=лидер» (см. §5) — если команда была пустой (`leader_user_id IS NULL`), пользователь становится `group_leader` (`teams_service.create_for_leader`/`set_leader_if_absent`), иначе `group_member`. `team_id` проставляется атомарно, поэтому CHECK-инвариант не нарушается. **Home-членство зеркалируется** ([ADR-0012](./adr/ADR-0012-multi-team-membership.md)): в той же транзакции вставляется строка `user_teams(user_id, team_id)`. Audit `create_user`.
-- **Ответы:** `201 {"id", "username", "role", "team_id"}`; `400 {"error":"team_required"}` (team_id отсутствует/пуст); `409 {"error":"username_taken"}`; `400 {"error":"invalid_username"}`; `404 {"error":"team_not_found"}`.
+- **Тело (JSON):** `{"username": str, "display_name": str|null, "team_id": int, "extra_team_ids": list[int]?}`. **`team_id` обязателен** — это **домашняя** команда; создаваемый пользователь получает роль `group_member`/`group_leader`, для которой CHECK `users_role_team_invariant` требует `team_id IS NOT NULL` ([04-data-model.md](./04-data-model.md)). Создать пользователя «без команды» нельзя (роль `super_admin` не создаётся через этот endpoint — он seed-only).
+- **`extra_team_ids` (опционально, [ADR-0012](./adr/ADR-0012-multi-team-membership.md)):** дополнительные команды, в которые пользователь добавляется **сразу при создании** (доп. членства `user_teams`, помимо домашней). Пусто/не прислано → только домашняя команда (прежнее поведение). Нормализация до вставки: **дедуп**, **исключить `team_id`** (домашняя команда уже добавляется home-членством — её дубль в `extra_team_ids` игнорируется молча, не ошибка), **только положительные** id. Каждая команда из результирующего набора обязана существовать; несуществующая → `404 team_not_found` (транзакция откатывается, пользователь не создаётся).
+- **Логика:** `create_user` — `username` (lower, уникальный), `password_hash=NULL`, `password_reset_required=true`. Всё — в **одной транзакции** (deferred constraints):
+  1. пользователь добавляется в **домашнюю** команду `team_id` атомарно (CHECK-инвариант не нарушается); срабатывает правило «первый=лидер» (§5) **только для home** — если команда была пустой (`leader_user_id IS NULL`), пользователь становится `group_leader` (`teams_service.set_leader_if_absent`), иначе `group_member`;
+  2. **home-членство зеркалируется** — вставляется строка `user_teams(user_id, team_id)` ([ADR-0012](./adr/ADR-0012-multi-team-membership.md));
+  3. для каждого id из нормализованного `extra_team_ids` — идемпотентная вставка доп. членства `user_teams(user_id, extra_id)` (`UserTeamRepository.add`, `ON CONFLICT DO NOTHING`). **Доп. членства «первым=лидером» НЕ управляют** — лидерство только на домашней (ADR-0012 §4); роль пользователя доп. командами не меняется.
+  - Ревокация сессий не нужна — пользователь только что создан (активных сессий нет).
+  - Audit `create_user` (`details = {team_id, extra_team_ids}` — доп. команды входят в единую запись создания; отдельные `user_team_add` на каждую доп. команду не эмитятся, т.к. это часть атомарного создания).
+- **Приём формы (no-JS):** доп. команды — multi-value поле `extra_team_ids[]` (и/или повторяющееся `extra_team_ids`), читается через `form.getlist` (нецелые/пустые отбрасываются, как в mail-agregator `_form_int_list`). `_read_body` роутера для этого поля обязан использовать `getlist`, а не `form.items()` (который схлопывает повторы). JSON-путь принимает массив `extra_team_ids` как есть.
+- **Ответы:** `201 {"id", "username", "role", "team_id"}` (доп. команды в ответе не перечисляются — их читает `GET /api/admin/users` в `team_ids`); `400 {"error":"team_required"}` (team_id отсутствует/пуст); `409 {"error":"username_taken"}`; `400 {"error":"invalid_username"}`; `404 {"error":"team_not_found"}` (домашняя **или** любая из `extra_team_ids` не существует).
 
 ### `POST /api/admin/users/{id}/reset`
 - **Логика:** `reset_password` — `password_hash=NULL`, `password_reset_required=true`; revoke всех сессий пользователя (Redis) и **всех** `telegram_links` (`reason="password_reset"`). Audit `reset_password`.
@@ -250,16 +257,37 @@
 
 Источник — [ADR-0005](./adr/ADR-0005-sms-addressing-via-team.md), multi-team — [ADR-0012](./adr/ADR-0012-multi-team-membership.md). **Любой участник** может добавлять/удалять номера **любой из своих команд** (`VisibilityScope.team_ids` = home ∪ доп. членства).
 
+> **Никнейм номера (`label`) и эффективный лейбл (нормативно).** `phone_numbers.label` — человекочитаемый **никнейм** номера (существующее поле, [04-data-model.md](./04-data-model.md); новое поле не вводится). **Эффективный лейбл номера = `label or phone_number`** (по образцу mail-agregator `effective_account_label = display_name or email`, ADR-0020): если `label` задан — показываем его, иначе — сам номер. `label` **глобален на номере** (не пер-команда/пер-пользователя). Редактирование — `PATCH /api/numbers/{id}` (ниже). Отображается на `/messages` (строка сообщения + селектор, §9) и на `/admin/teams` (номера под командой, §7). `serialize_number` уже включает `label`; `serialize_message` **не меняется** — карта `to_number→label` строится в шаблоне из контекста `numbers`.
+
 ### `GET /api/numbers`
 - **Guard:** `require_authenticated`.
 - **Логика:** super_admin видит все номера (опц. фильтр `?team_id=`; может включать unassigned с `team_name=null`); участник — номера **всех своих команд** (`phone_numbers.team_id = ANY(VisibilityScope.team_ids)`, [ADR-0012](./adr/ADR-0012-multi-team-membership.md)), а не только домашней. Для управления unassigned-пулом/распределения админ использует §4a (`GET/PATCH /api/admin/numbers`); данный endpoint остаётся общим просмотром.
-- **Ответ `200`:** `{"numbers": [{"id","phone_number","team_id","team_name","label","is_active","added_by_user_id","created_at"}]}`.
+- **Ответ `200`:** `{"numbers": [{"id","phone_number","team_id","team_name","label","is_active","added_by_user_id","created_at"}]}` (форма `serialize_number`).
 
 ### `POST /api/numbers`
 - **Guard:** `require_authenticated`.
-- **Тело (JSON):** `{"phone_number": str, "label": str|null, "team_id": int|null}`.
+- **Тело (JSON):** `{"phone_number": str, "label": str|null, "team_id": int|null}`. `label` — опциональный никнейм (trim; пустое/пробельное → `NULL`; `max_length=100`).
 - **Логика:** для участника/лидера `team_id` обязан быть **одной из своих команд** (`∈ VisibilityScope.team_ids`, [ADR-0012](./adr/ADR-0012-multi-team-membership.md)); если не передан — дефолт `current_user.team_id` (домашняя). `super_admin` обязан передать `team_id` явно. Нормализация номера (E.164). `added_by_user_id = current_user.id`. Audit `number_added`.
-- **Ответы:** `201 {"id","phone_number","team_id"}`; `409 {"error":"phone_number_taken"}` (номер уже привязан); `400 {"error":"invalid_phone_number"}`; `400 {"error":"team_required"}` (super_admin без team_id); `403 {"error":"forbidden"}` (участник указал команду **не из своих** `team_ids`).
+- **Ответы:** `201 {"id","phone_number","team_id","label"}` (**`label` включён в ответ** — ранее отсутствовал; значение — сохранённый никнейм или `null`); `409 {"error":"phone_number_taken"}` (номер уже привязан); `400 {"error":"invalid_phone_number"}`; `400 {"error":"team_required"}` (super_admin без team_id); `403 {"error":"forbidden"}` (участник указал команду **не из своих** `team_ids`).
+
+### `PATCH /api/numbers/{id}` (задать/изменить никнейм номера)
+
+Редактирование никнейма (`label`) номера. **Guard:** `require_authenticated`. **CSRF:** да (double-submit — как у прочих мутаций; есть сессия/`sms_csrf`).
+- **Тело (JSON):** `{"label": str|null}` — единственное редактируемое поле.
+- **Семантика присутствия/затирания (нормативно; идиома sms-проекта, НЕ `clear_display_name`-сентинел mail-agregator).** Проект различает «поле не прислано» ↔ «прислано пустым» на **уровне роутера по наличию ключа в разобранном body** (как `PATCH /api/admin/users`: `set_display_name = "display_name" in body`, `set_team = "team_id" in body`), а не через отдельный булев сентинел в pydantic-модели. Поэтому:
+  - ключ `label` **присутствует** и значение (после `strip`) **непустое** → установить `label = <trimmed>` (`max_length=100`; превышение → `400 validation_error` от pydantic);
+  - ключ `label` **присутствует** и значение пустое/пробельное **или** `null` → **затереть** `label = NULL` (эквивалент «убрать никнейм»);
+  - ключ `label` **отсутствует** → no-op (ничего не меняем; возвращаем текущее состояние `200`).
+  - **no-JS форма** всегда шлёт `label=<value>` (ключ присутствует): пустое поле ⇒ затирание — ровно нужная семантика «очистить никнейм» без отдельного сентинела.
+- **Guard принадлежности:** `super_admin` — **любой** номер (включая unassigned); участник/лидер — только номер **своей команды** (`phone_numbers.team_id ∈ VisibilityScope.team_ids`). Иначе `403 {"error":"forbidden"}` (та же логика, что `DELETE /api/numbers/{id}`; unassigned-номер с `team_id=NULL` участнику недоступен). Никнейм глобален — участник, назначая лейбл номеру своей команды, меняет его для всех.
+- **Audit:** `number_label_set` (`details = {number_id, phone_number, label}`, где `label` — новое значение или `null`).
+- **Ответы:**
+  - `200` — форма `serialize_number`: `{"id","phone_number","team_id","team_name","label","is_active","added_by_user_id","created_at"}` (`label` = новое значение);
+  - `403 {"error":"forbidden"}` — номер не из команд участника;
+  - `404 {"error":"number_not_found"}`;
+  - `400 {"error":"validation_error"}` — `label` длиннее 100.
+- **no-JS fallback:** `POST /api/numbers/{id}` + поле `_method=PATCH` + `label` + `csrf_token` (MethodOverride уже whitelist-ит `^/api/numbers/\d+$`; `PATCH ∈ _ALLOWED_OVERRIDE_METHODS` — код-комментарий «DELETE override» иллюстративен, whitelist метод-агностичен). CSRF double-submit применяется.
+- **UI редактирования (НОРМАТИВНО).** Контрол «задать/изменить никнейм» размещается на **`/messages`** — для **ВСЕХ** аутентифицированных ролей (прямое требование заказчика: «во вкладке Сообщения добавить возможность давать никнейм номеров»). Список номеров для редактирования берётся из уже инжектируемого на `/messages` ролевого набора `numbers` (§9: super_admin — все номера; участник — номера своих команд), поэтому доп. данных/endpoint'ов не нужно. `PATCH /api/numbers/{id}` уже допускает: super_admin — любой номер, участник — свои команды. **`/app` контрол никнейма НЕ несёт** (и не может для super_admin: там `302 → /admin`); на `/admin`/`/admin/teams` — тоже нет (номера под командой read-only, [ADR-0016](./adr/ADR-0016-admin-teams-ssr-parity-with-mail-agregator.md) §2). Полный контракт размещения на `/messages` — §9.
 
 ### `DELETE /api/numbers/{id}`
 - **Guard:** `require_authenticated`.
@@ -318,7 +346,7 @@
 **Empty-state (нет пользователей / пустой результат поиска):** при пустом наборе (`user_groups` пуст — в т.ч. при непустом `q`, ничего не найдено) — блок `<div class="admin__empty" role="status">` с сообщением **«По вашему запросу пользователи не найдены.»** (порт `mail-agregator` users.html ~40–43). Таблица/бакеты в этом случае не рендерятся.
 
 **Диалоги** (визуальный паттерн = референс): «Создать пользователя», «Создать команду», «+»-меню действий (`Переместить в другую команду` / `Добавить в другую команду`; «Переместить» задизейблено для лидера), «Перенести в команду», «Добавить в команду», «Удалить» (подтверждение вводом логина). Копируется **визуальный паттерн**, **не** семантика — форма каждого создающего/мутирующего диалога приводится к sms-контракту:
-  - **«Создать пользователя» (§4):** требует `team_id` и **не** содержит radio-выбора роли (в отличие от референса — роль выводится правилом «первый=лидер», ADR-0003/0012).
+  - **«Создать пользователя» (§4):** требует `team_id` (домашняя команда) и **не** содержит radio-выбора роли (в отличие от референса — роль выводится правилом «первый=лидер», ADR-0003/0012). **Дополнительно** может содержать multi-select **доп. команд** (`extra_team_ids[]`, [ADR-0012](./adr/ADR-0012-multi-team-membership.md)) для добавления пользователя сразу в несколько команд при создании (§4 «`extra_team_ids`»); поле опционально, no-JS — множественный `<select multiple name="extra_team_ids[]">` из `teams`.
   - **«Создать команду» (§5):** содержит **только** поле `name` (`POST /api/admin/teams` принимает `{name}`). Полей `leader_user_id` и `member_ids[]` из референс-шаблона (mail-agregator users.html ~304–366) **НЕТ** — их не портировать. Команда создаётся orphan (`leader_user_id=NULL`); лидер назначается автоматически по правилу «первый=лидер» при добавлении первого участника ([ADR-0003](./adr/ADR-0003-roles-and-teams.md), §5). Кнопка `+ Создать команду` в тулбаре открывает этот упрощённый диалог; его сабмит — `POST /api/admin/teams {name}`.
 
 - **SSR-контекст (НОРМАТИВНО; split-ownership: шаблон `app/api/templates/admin/users.html` авторит frontend, контекст рендера передаёт backend).** Backend **ОБЯЗАН** инжектировать переменные под этими **ЛИТЕРАЛЬНЫМИ** именами (порт имён референса, с sms-терминологией `team`):
@@ -335,8 +363,35 @@
 - **Секция unassigned-номеров ([ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md), [ADR-0013](./adr/ADR-0013-on-demand-twilio-number-sync.md)):** сервер инжектирует `unassigned_numbers: list[{id, phone_number, label, is_active, created_at}]` (номера с `team_id IS NULL`) и `teams` (для выбора команды). На каждый номер — контрол назначения команды (select команды + submit), мутация через `PATCH /api/admin/numbers/{id}` `{team_id}` (§4a, CSRF double-submit, `_method=PATCH` для no-JS). Каноничный источник данных — `GET /api/admin/numbers?assignment=unassigned`; SSR-инжект — первичный рендер.
   - **Кнопка «Синхронизировать из Twilio» ([ADR-0013](./adr/ADR-0013-on-demand-twilio-number-sync.md)):** в этой же секции — контрол, вызывающий `POST /api/admin/numbers/sync` (CSRF double-submit). После ответа `200 {synced_total, added, skipped_existing}` — показать результат (например «добавлено N, пропущено M») и **обновить список unassigned** (перезагрузка страницы/секции либо перезапрос `GET /api/admin/numbers?assignment=unassigned`). Ошибки `twilio_error`/`twilio_not_configured` (§4a) — показать флеш/сообщение, список не менять. Способ вызова (JS-fetch через `csrf.js` vs POST-форма) — на усмотрение frontend (сверить с кодом проекта); контракт — наличие кнопки и её привязка к endpoint'у.
 
-### `GET /admin/teams`
-- **Guard:** `require_admin`. Jinja2-страница: список команд, создание/переименование/удаление, состав и лидер.
+### `GET /admin/teams` — SSR-страница команд (паритет с mail-agregator, [ADR-0016](./adr/ADR-0016-admin-teams-ssr-parity-with-mail-agregator.md))
+- **Guard:** `require_admin`. **SSR** Jinja2-страница (ранее — пустая оболочка + client-side fetch; теперь server-rendered, ADR-0016): единая таблица, где **каждая команда = отдельный `<tbody>`** из мета-строки + строки-списка её номеров (`colspan`), по образцу `mail-agregator/.../admin/groups/list.html`. Сохранены контролы создать/переименовать/удалить/назначить лидера (§5).
+
+#### Паритет `/admin/teams` (НОРМАТИВНО — приёмочное условие, [ADR-0016](./adr/ADR-0016-admin-teams-ssr-parity-with-mail-agregator.md))
+
+**Колонки (единый `<thead>`, строго в порядке):** `Название · Лидер · Участников · Номеров · Создана · Действия` (6).
+
+**Структура таблицы:**
+- Одна `<table class="admin-teams-table">` (порт `admin-groups-table`) в `<div class="table-wrapper">` с единым `<thead>`.
+- Каждая команда — **`<tbody class="admin-teams-table__group">`** из двух `<tr>`:
+  - **мета-строка** (`admin-teams-table__row`, `data-team-id`): Название (strong) · Лидер (эфф. имя или «—») · Участников (`members_count`) · Номеров (`numbers_count`) · Создана (`time_tag_short`) · Действия (Переименовать / Лидер / Удалить);
+  - **строка-номеров** (`admin-teams-table__numbers-row`) с единственной `<td colspan="6">`: список номеров команды (эффективный лейбл + номер + приглушённый стиль для `is_active=false`), либо empty-state «Номеров в команде пока нет.».
+- Нераспределённые номера (`team_id IS NULL`) на этой странице **не показываются** (ADR-0016 §3; их место — секция номеров на `/admin`).
+
+**Контролы (сохранены; §5):** Создать команду (тулбар → диалог → `POST /api/admin/teams {name}`), Переименовать (`PATCH /api/admin/teams/{id} {name}`), Удалить (`DELETE /api/admin/teams/{id}`; только пустую по home — иначе `409 team_has_members`), Назначить лидера (`PATCH /api/admin/teams/{id}/leader {new_leader_user_id}`). Диалог «Создать команду» — **только** поле `name` (orphan-создание, лидер по «первый=лидер»; полей `leader_user_id`/`member_ids[]` нет — как в §7 для `/admin`).
+- **no-JS fallback** (обязателен для create/rename/delete): inline-формы `POST` с `_method=PATCH`/`_method=DELETE` + `csrf_token` (MethodOverride whitelist-ит `/api/admin/teams`, `^/api/admin/teams/\d+$`, `^/api/admin/teams/\d+/leader$`).
+- **Назначение лидера** остаётся **JS-обогащённым** диалогом: список кандидатов (участники команды) подгружается по требованию из `GET /api/admin/users` (как сейчас). Полноценный no-JS-путь смены лидера — вне scope этой итерации (ADR-0016 §4): потребовал бы инжектить состав каждой команды в SSR-контекст; операция редкая, через API доступна.
+- `admin_teams.js` **больше не фетчит/не рендерит список** (теперь SSR); сводится к обогащению диалогов и перехвату inline-форм мутаций. `GET /api/admin/teams` (JSON, §5) сохраняется (программный доступ + подгрузка кандидатов в лидеры).
+
+- **SSR-контекст (НОРМАТИВНО; split-ownership: шаблон `app/api/templates/admin/teams.html` авторит frontend, контекст рендера передаёт backend `app/api/routers/admin_ui.py::admin_teams_page`).** Backend **ОБЯЗАН** инжектировать переменные под этими **ЛИТЕРАЛЬНЫМИ** именами:
+  - `teams: list[dict]` — команды в порядке `name ASC`. Каждая: `{id: int, name: str, leader: {id: int, username: str, display_name: str|None} | None, members_count: int, numbers_count: int, is_active: bool, created_at: str}`.
+    - `leader` — бриф лидера домашней команды (`teams.leader_user_id` → user), `None` для orphan-команды без лидера. Эффективное имя лидера в шаблоне = `display_name or username` (`effective_user_name`).
+    - `members_count` — число участников по `user_teams` (home + доп., [ADR-0012](./adr/ADR-0012-multi-team-membership.md); `TeamRepository.member_counts`). `numbers_count` — число номеров с `phone_numbers.team_id = id` (`TeamRepository.numbers_counts`).
+    - `created_at` — ISO 8601 строка (`time_tag_short` принимает и ISO-строку, и datetime).
+  - `numbers_by_team: dict[int, list[dict]]` — номера каждой команды по **ТЕКУЩЕЙ** принадлежности (`phone_numbers.team_id`). Ключ — `team_id` (int); значение — список `{id: int, phone_number: str, label: str|None, effective_label: str, is_active: bool}`, где **`effective_label = label or phone_number`** (§6). Команды без номеров присутствуют с пустым списком (backend инициализирует `{t.id: [] for t in teams}`, затем заполняет). Сортировка номеров внутри команды — `created_at DESC` (как `list_by_team`). Шаблон читает `numbers_by_team.get(team.id) or []`.
+  - `csrf_token: str`, `is_super_admin: true`.
+  - Схема БД не меняется (презентация из существующих `teams`/`users`/`user_teams`/`phone_numbers`).
+
+**Empty-state (нет команд):** `teams` пуст → блок `<div class="admin__empty" role="status">` с сообщением «Команд пока нет.» + подсказка «Нажмите «Создать команду», чтобы добавить первую.» (порт текущего `renderEmpty` из `admin_teams.js`). Таблица не рендерится.
 
 ### `GET /messages` — просмотр входящих SMS (все роли)
 - **Guard:** `require_authenticated` (super_admin, group_leader, group_member). Read-only просмотр истории `inbound_sms` с ролевым селектором номеров и cursor-пагинацией. Полный контракт (видимость, no-JS fallback, курсор) — §9. Пункт «Сообщения» в шапке `base.html` — для всех аутентифицированных.
@@ -398,6 +453,7 @@ Read-only просмотр истории `inbound_sms`. Единая стран
 - **no-JS fallback (обязателен):** фильтр — GET-форма (`method="GET" action="/messages"`) с `<select>` номера (для super_admin — ещё `<select>` команды) и submit; пагинация — обычная ссылка «Дальше» на `/messages?...&cursor=<next_cursor>` (форвардная, рендерится только когда `next_cursor != null`). Прогрессивное JS-обогащение (fetch к `GET /api/messages`) допустимо, но страница обязана работать без JS. Курсор в ссылках — тот же opaque-токен.
 - **SSR-контекст (НОРМАТИВНО; split-ownership: шаблон `app/api/templates/messages.html` авторит frontend, контекст рендера передаёт backend).** Backend **ОБЯЗАН** инжектировать в шаблон ровно следующие переменные **под этими ЛИТЕРАЛЬНЫМИ именами** (не `selected_*`, не иные варианты) — шаблон читает их именно так. Канонические имена совпадают с именами query-параметров (`to_number`, `team_id`, `limit`), чтобы preselect фильтров и JS-«Ещё» работали без переименований. Список — исчерпывающий; отсутствие любой из переменных или иное имя = функциональный дефект (теряется активный фильтр, JS-пагинация теряет фильтр). Структура элементов `messages`/`numbers` — по `app/api/serializers.py`:
   - `messages: list[dict]` — сериализованные SMS текущей (или запрошенной по `cursor`) страницы через `serialize_message`; структура элемента — §9 «Сериализация SMS» (`{id, from_number, to_number, body, received_at, team_id}`, `raw_payload` не отдаётся). Порядок — `received_at DESC, id DESC`.
+    - **Никнейм номера в строке сообщения (нормативно, §6).** В строке сообщения рядом с `to_number` шаблон показывает **эффективный лейбл** номера-получателя = `label or to_number`. **`serialize_message` НЕ меняется** (никнейм в него не добавляется): карту `to_number → label` шаблон строит из уже инжектированного контекста `numbers` (каждый элемент несёт `phone_number` + `label`). Если для `to_number` в `numbers` нет записи (номер вне видимого набора / уже отвязан) — показывается сам `to_number`. Никнейм в селекторе номера (`<option>`) уже рендерится (`phone_number — label`).
   - `next_cursor: str | None` — opaque-курсор следующей страницы. Ссылка «Дальше» (`/messages?...&cursor=<next_cursor>`) рендерится **только при `next_cursor != null`** (forward-only).
   - `numbers: list[dict]` — номера для `<select>` фильтра `to_number` через `serialize_number`; поля элемента: `{id, phone_number, team_id, team_name, label, is_active, added_by_user_id, created_at}` (`team_name` = `null` для unassigned). Набор: для super_admin — **все** номера; для участника — номера **его команд** (`VisibilityScope.team_ids`, [ADR-0012](./adr/ADR-0012-multi-team-membership.md)); пустой при пустом scope.
   - `teams: list[{id, name}]` — команды для `<select>` фильтра `team_id`. **Только для super_admin** (сортировка по `name`); для участника — **пустой список** (селектор команды не рендерится). Семантически это набор, отличный от `teams` в §7 (`/admin`, `/app`), — здесь фильтр по текущей принадлежности номера.
@@ -405,8 +461,9 @@ Read-only просмотр истории `inbound_sms`. Единая стран
   - `to_number: str | None` — **ТЕКУЩЕЕ** значение фильтра номера (E.164) для preselect `<select name="to_number">`, либо `None`. Имя литеральное — **не** `selected_to_number`.
   - `team_id: int | None` — **ТЕКУЩЕЕ** значение фильтра команды (для preselect `<select name="team_id">`); **только super_admin** (backend передаёт `team_id if is_super_admin else None`, поэтому у не-super_admin всегда `None`). Имя литеральное — **не** `selected_team_id`.
   - `limit: int` — текущий размер страницы (**дефолт `50`**, диапазон `[1,100]`; рендерится в скрытое поле формы `<input name="limit">` и подставляется в JS-запрос «Ещё»). **Обязателен**: backend **должен** передавать `limit` в контекст (ранее отсутствовал — без него no-JS форма и JS-пагинация теряют размер страницы).
-  - `csrf_token: str`, `username: str`, `display_name: str | None` — как на прочих SSR-страницах (§7). `display_name` nullable (`users.display_name` — `Mapped[str | None]`; backend передаёт `user.display_name` напрямую, значение может быть `null`).
-- Мутаций страница не выполняет (read-only) — POST-форм, кроме logout из `base.html`, нет.
+  - `csrf_token: str`, `username: str`, `display_name: str | None` — как на прочих SSR-страницах (§7). `display_name` nullable (`users.display_name` — `Mapped[str | None]`; backend передаёт `user.display_name` напрямую, значение может быть `null`). `csrf_token` нужен, в частности, для форм редактирования никнейма (double-submit).
+- **Редактирование никнейма номера (НОРМАТИВНО; прямое требование заказчика: «во вкладке Сообщения добавить возможность давать никнейм номеров»).** `/messages` несёт **и отображение** эффективного лейбла в строке сообщения (выше), **и контрол «задать/изменить никнейм»** — для **ВСЕХ** аутентифицированных ролей (super_admin, group_leader, group_member). Источник списка номеров для редактирования — уже инжектированный контекст `numbers` (ролевой: super_admin — все номера; участник — номера своих команд); доп. данных/endpoint'ов не требуется. Каждый номер из `numbers` несёт `{id, phone_number, label}` — достаточно для рендера контрола и текущего значения никнейма. Мутация — `PATCH /api/numbers/{id}` `{label}` (§6; guard уже: super_admin — любой номер, участник — свои команды; CSRF double-submit). **no-JS fallback** — форма `POST /api/numbers/{id}` с `_method=PATCH` + `label` + `csrf_token` (MethodOverride whitelist `^/api/numbers/\d+$`); пустое `label` → затирание в `NULL` (§6). Прогрессивное JS-обогащение (fetch к `PATCH /api/numbers/{id}` без перезагрузки) допустимо. Форма/виджет контрола (inline рядом с номером в селекторе / отдельная секция «Номера») — на усмотрение frontend; контракт — наличие контрола на `/messages` для всех ролей и его привязка к `PATCH /api/numbers/{id}`.
+- **Мутации страницы:** по сообщениям (`inbound_sms`) страница **read-only** (нет прочитанности/ответа/удаления). Единственная мутация — **редактирование никнейма номера** (`PATCH /api/numbers/{id}`, выше) + logout из `base.html`. Ранее (до Feature «никнейм») страница была полностью read-only.
 - **Ответ:** `200` (SSR HTML) для всех ролей; `302 → /login` при отсутствии сессии. Битый `cursor` в query → страница показывает пустой список / сообщение (или `400`) — конкретика UX на усмотрение frontend; API-семантика `invalid_cursor` — выше.
 
 ---
@@ -428,7 +485,8 @@ Read-only просмотр истории `inbound_sms`. Единая стран
 | `/api/admin/numbers/sync` | POST | `require_admin` | да ([ADR-0013](./adr/ADR-0013-on-demand-twilio-number-sync.md)) |
 | `/api/admin/teams*` | GET/POST/PATCH/DELETE | `require_admin` | да |
 | `/api/admin/teams/{id}/leader` | PATCH | `require_admin` | да |
-| `/api/numbers*` | GET/POST/DELETE | `require_authenticated` | да |
+| `/api/numbers*` | GET/POST/PATCH/DELETE | `require_authenticated` | да (POST/PATCH/DELETE) |
+| `/api/numbers/{id}` | PATCH (+ POST same-path `_method=PATCH`) | `require_authenticated` (super_admin любой; участник — свои команды) | да (никнейм `label`) |
 | `/api/messages` | GET | `require_authenticated` (read-only) | — (GET) |
 | `/` | GET | публичный (диспетчер: 302 по роли/на `/login`) | — |
 | `/app` | GET | `require_authenticated` (member/leader; super_admin → 302 `/admin`) | — |
@@ -460,7 +518,8 @@ Read-only просмотр истории `inbound_sms`. Единая стран
 | `invalid_cursor` | 400 | `GET /api/messages` | Битый/недекодируемый opaque-курсор пагинации ([ADR-0014](./adr/ADR-0014-sms-viewing-by-number-current-ownership-cursor-pagination.md)). |
 | `invalid_limit` | 400 | `GET /api/messages` | `limit` вне диапазона `[1,100]`. |
 | `phone_number_taken` | 409 | `POST /api/numbers` | Номер уже привязан. |
-| `forbidden` | 403 | `/api/numbers*` | Участник обращается к чужой команде. |
+| `forbidden` | 403 | `/api/numbers*` | Участник обращается к чужой команде (включая `PATCH /api/numbers/{id}` — никнейм номера не из его команд / unassigned). |
+| `number_not_found` | 404 | `PATCH/DELETE /api/numbers/{id}` | Номер не найден. |
 | `invalid_query` | 400 | `GET /api/admin/numbers` | Несовместимые фильтры (`team_id` + `assignment=unassigned`). |
 | `number_not_found` | 404 | `PATCH /api/admin/numbers/{id}` | Номер не найден. |
 | `team_not_found` | 404 | `PATCH /api/admin/numbers/{id}`, `PATCH/POST /api/admin/users` | Переданный `team_id` не существует. |

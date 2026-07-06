@@ -211,7 +211,7 @@ erDiagram
 | `phone_number` | TEXT | NOT NULL, UNIQUE | Номер в формате E.164 (нормализуется `normalize_phone`). |
 | `team_id` | BIGINT | **NULL**, FK → `teams(id)` **ON DELETE SET NULL** | Команда-владелец номера. **`NULL` = unassigned** (номер в пуле, не привязан к команде; см. [ADR-0009](./adr/ADR-0009-unassigned-numbers-admin-allocation.md)). Удаление команды → её номера становятся unassigned (SET NULL), не удаляются. |
 | `added_by_user_id` | BIGINT | NULL, FK → `users(id)` ON DELETE SET NULL | Кто добавил (аудит). Любой участник команды; `NULL` для импортированных unassigned-номеров ([07-deployment.md](./07-deployment.md)). |
-| `label` | TEXT | NULL | Ярлык. |
+| `label` | TEXT | NULL | **Никнейм** (человекочитаемый ярлык) номера. Задаётся при создании (`POST /api/numbers`) и редактируется `PATCH /api/numbers/{id}` (trim, `max_length=100` на уровне API; `NULL` = никнейм не задан). Глобален на номере (не пер-команда/пер-пользователь). **Эффективный лейбл номера = `label or phone_number`** (по образцу mail-agregator `effective_account_label = display_name or email`, ADR-0020) — используется на `/messages` (строка сообщения + селектор) и `/admin/teams` (номера под командой, [ADR-0016](./adr/ADR-0016-admin-teams-ssr-parity-with-mail-agregator.md)). Контракт — [05-api-contracts.md](./05-api-contracts.md) §6. |
 | `is_active` | BOOLEAN | NOT NULL DEFAULT true | |
 | `created_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | |
 | `updated_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | Триггер `set_updated_at()`. |

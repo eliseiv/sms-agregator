@@ -1,9 +1,34 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
 
-{# SSR-оболочка страницы команд (docs/05 §7). Backend отдаёт пустой контекст —
-   список подгружается client-side из GET /api/admin/teams (+ GET /api/admin/users
-   для выбора нового лидера) через admin_teams.js. #}
+{# =============================================================================
+   /admin/teams — SSR-страница команд (паритет с mail-agregator groups/list.html,
+   ADR-0016). Единая таблица `admin-teams-table`, где КАЖДАЯ команда = отдельный
+   <tbody> из двух строк:
+     - мета-строка (Название · Лидер · Участников · Номеров · Создана · Действия);
+     - строка-номеров (<td colspan=6>) со списком номеров команды по ТЕКУЩЕЙ
+       принадлежности (эффективный лейбл + номер + приглушённый стиль для
+       is_active=false), либо empty-state «Номеров в команде пока нет.».
+
+   Источник истины: docs/05-api-contracts §7 «GET /admin/teams» +
+   «Паритет /admin/teams (НОРМАТИВНО)», §5 (/api/admin/teams*); ADR-0016.
+
+   SSR-контекст (литеральные имена, backend инжектирует — split-ownership):
+     - teams: list[{id, name, leader: {id, username, display_name}|None,
+              members_count, numbers_count, is_active, created_at}]  — name ASC;
+     - numbers_by_team: dict[int, list[{id, phone_number, label,
+              effective_label, is_active}]]  (effective_label = label or phone);
+     - csrf_token, is_super_admin.
+
+   Контролы (docs §5): создать / переименовать / удалить — no-JS form-fallback
+   (POST + _method=PATCH/DELETE + csrf_token, MethodOverride whitelist);
+   назначить лидера — JS-обогащённый диалог (кандидаты из GET /api/admin/users).
+   admin_teams.js больше НЕ фетчит/не рендерит список (теперь SSR) — сводится к
+   перехвату inline-форм мутаций (AJAX без перезагрузки) и диалогу лидера.
+   CSP-безопасно: без inline-обработчиков/стилей; данные для JS — data-атрибуты. #}
+
+{%- set teams_list = teams if (teams is defined and teams) else [] -%}
+{%- set nbt = numbers_by_team if (numbers_by_team is defined and numbers_by_team) else {} -%}
 
 {% block title %}Команды &middot; SMS Агрегатор{% endblock %}
 {% block body_class %}admin-teams{% endblock %}
@@ -14,76 +39,183 @@
     <h1 id="teams-heading" class="admin__title">Команды</h1>
     <div class="admin__actions">
       <a class="topnav__link" href="/admin">&larr; К пользователям</a>
-      <button type="button" class="btn btn--primary" data-admin-create-team>+ Создать команду</button>
+      {# Создать команду — инлайн-раскрывашка (no-JS работает нативно; JS
+         перехватывает submit для AJAX без перезагрузки). #}
+      <details class="inline-disclosure admin-teams__create" data-admin-create-team-wrap>
+        <summary class="btn btn--primary btn--small">+ Создать команду</summary>
+        <form class="inline-form admin-teams__create-form"
+              method="POST"
+              action="/api/admin/teams"
+              data-admin-create-team-form>
+          {{ m.csrf_input() }}
+          <p class="form-error" role="alert" data-admin-create-team-error hidden></p>
+          <label class="visually-hidden" for="new-team-name">Название команды</label>
+          <input
+            class="field__input field__input--compact"
+            type="text"
+            id="new-team-name"
+            name="name"
+            placeholder="Название команды"
+            required
+            minlength="1"
+            maxlength="100"
+            autocomplete="off">
+          <button type="submit" class="btn btn--primary btn--small" data-admin-create-team-submit>Создать</button>
+        </form>
+      </details>
     </div>
   </header>
 
   <p class="admin__hint">
-    Команду можно удалить только когда она пуста: сначала переведите/удалите
-    участников (раздел «Пользователи»), затем удалите команду.
+    Под каждой командой — её номера по текущей принадлежности. Команду можно
+    удалить только когда она пуста: сначала переведите/удалите участников
+    (раздел «Пользователи»), затем удалите команду. Лидер назначается
+    автоматически при добавлении первого участника; сменить его — кнопка «Лидер».
   </p>
 
-  {# Корневой контейнер: admin_teams.js рендерит loading / error / empty / success. #}
-  <div data-teams-root aria-live="polite">
-    <div class="admin__loading" role="status">Загрузка списка команд…</div>
-  </div>
+  {% if not teams_list %}
+    {# Empty-state (docs §7): команд нет. #}
+    <div class="admin__empty" role="status">
+      <p>Команд пока нет.</p>
+      <p class="field__hint">Нажмите «Создать команду», чтобы добавить первую.</p>
+    </div>
+  {% else %}
+    <div class="table-wrapper">
+      <table class="admin-teams-table">
+        <thead>
+          <tr>
+            <th scope="col">Название</th>
+            <th scope="col">Лидер</th>
+            <th scope="col">Участников</th>
+            <th scope="col">Номеров</th>
+            <th scope="col">Создана</th>
+            <th scope="col" class="admin-teams-table__actions-col">Действия</th>
+          </tr>
+        </thead>
+        {% for t in teams_list %}
+          {# Один <tbody> на команду: мета-строка + строка-номеров на colspan.
+             Браузер парсит каждый <tbody> как секцию — разделители/отступы на
+             команду без лишних обёрток (тот же приём, что в референсе). #}
+          <tbody class="admin-teams-table__group">
+            <tr class="admin-teams-table__row" data-team-id="{{ t.id }}">
+              <td class="admin-teams-table__name">
+                <strong>{{ t.name | e }}</strong>
+              </td>
+              <td class="admin-teams-table__leader">
+                {% if t.leader %}
+                  {{ m.effective_user_name(t.leader) }}
+                  {% if t.leader.display_name and t.leader.display_name != t.leader.username %}
+                    <span class="admin-users-table__muted">(@{{ t.leader.username | e }})</span>
+                  {% endif %}
+                {% else %}
+                  <span class="admin-users-table__muted">&mdash;</span>
+                {% endif %}
+              </td>
+              <td class="admin-teams-table__members">{{ t.members_count | default(0) }}</td>
+              <td class="admin-teams-table__numbers">{{ t.numbers_count | default(0) }}</td>
+              <td class="admin-teams-table__date">
+                {% if t.created_at %}
+                  {{ m.time_tag_short(t.created_at) }}
+                {% else %}
+                  <span class="admin-users-table__muted">&mdash;</span>
+                {% endif %}
+              </td>
+              <td class="admin-teams-table__actions">
+                {# Переименовать — инлайн-раскрывашка с реальной POST-формой
+                   (_method=PATCH). no-JS: нативный submit; JS перехватывает. #}
+                <details class="inline-disclosure">
+                  <summary class="btn btn--secondary btn--small">Переименовать</summary>
+                  <form class="inline-form admin-teams-table__rename-form"
+                        method="POST"
+                        action="/api/admin/teams/{{ t.id }}"
+                        data-admin-rename-form
+                        data-team-id="{{ t.id }}">
+                    {{ m.csrf_input() }}
+                    <input type="hidden" name="_method" value="PATCH">
+                    <label class="visually-hidden" for="rename-team-{{ t.id }}">
+                      Новое название команды {{ t.name | e }}
+                    </label>
+                    <input
+                      class="field__input field__input--compact"
+                      type="text"
+                      id="rename-team-{{ t.id }}"
+                      name="name"
+                      value="{{ t.name | e }}"
+                      required
+                      minlength="1"
+                      maxlength="100"
+                      autocomplete="off">
+                    <button type="submit" class="btn btn--primary btn--small">Сохранить</button>
+                  </form>
+                </details>
 
-  {# --- Диалог создания команды (POST /api/admin/teams {name}) --- #}
-  <dialog class="dialog" id="dialog-create-team" data-admin-create-team-dialog>
-    <form method="dialog" class="dialog__form-cancel">
-      <button type="submit" class="btn btn--link" aria-label="Закрыть">&times;</button>
-    </form>
-    <h2 class="dialog__title">Создать команду</h2>
-    <p class="form-error" role="alert" data-admin-create-team-error hidden></p>
-    <form class="form" data-admin-create-team-form>
-      <div class="field">
-        <label class="field__label" for="new-team-name">Название команды</label>
-        <input
-          class="field__input"
-          type="text"
-          id="new-team-name"
-          name="name"
-          required
-          minlength="1"
-          maxlength="100"
-          autocomplete="off">
-        <p class="field__hint">От 1 до 100 символов.</p>
-      </div>
-      <div class="form-actions">
-        <button type="submit" class="btn btn--primary" data-admin-create-team-submit>Создать</button>
-      </div>
-    </form>
-  </dialog>
+                {# Назначить лидера — JS-диалог (кандидаты из GET /api/admin/users).
+                   Без JS кнопка бездействует (осознанное сужение, ADR-0016 §4). #}
+                <button type="button"
+                        class="btn btn--secondary btn--small"
+                        data-admin-leader-trigger
+                        data-team-id="{{ t.id }}"
+                        data-team-name="{{ t.name | e }}"
+                        data-leader-id="{{ t.leader.id if t.leader else '' }}">Лидер</button>
 
-  {# --- Диалог переименования (PATCH /api/admin/teams/{id} {name}) --- #}
-  <dialog class="dialog" id="dialog-rename-team" data-admin-rename-dialog>
-    <form method="dialog" class="dialog__form-cancel">
-      <button type="submit" class="btn btn--link" aria-label="Закрыть">&times;</button>
-    </form>
-    <h2 class="dialog__title">Переименовать команду</h2>
-    <p class="form-error" role="alert" data-admin-rename-error hidden></p>
-    <form class="form" data-admin-rename-form>
-      <div class="field">
-        <label class="field__label" for="rename-team-name">Новое название</label>
-        <input
-          class="field__input"
-          type="text"
-          id="rename-team-name"
-          name="name"
-          required
-          minlength="1"
-          maxlength="100"
-          autocomplete="off">
-      </div>
-      <div class="form-actions">
-        <button type="button" class="btn btn--secondary" data-admin-rename-cancel>Отмена</button>
-        <button type="submit" class="btn btn--primary" data-admin-rename-go>Сохранить</button>
-      </div>
-    </form>
-  </dialog>
+                {# Удалить — реальная POST-форма (_method=DELETE). no-JS: нативный
+                   submit; JS перехватывает (confirm + AJAX). Только пустую по home
+                   (иначе сервер вернёт team_has_members). #}
+                <form class="inline-form admin-teams-table__delete-form"
+                      method="POST"
+                      action="/api/admin/teams/{{ t.id }}"
+                      data-admin-delete-form
+                      data-team-id="{{ t.id }}"
+                      data-team-name="{{ t.name | e }}"
+                      data-members-count="{{ t.members_count | default(0) }}">
+                  {{ m.csrf_input() }}
+                  <input type="hidden" name="_method" value="DELETE">
+                  <button type="submit" class="btn btn--danger btn--small"
+                          aria-label="Удалить команду {{ t.name | e }}">Удалить</button>
+                </form>
+              </td>
+            </tr>
+            <tr class="admin-teams-table__numbers-row">
+              <td colspan="6" class="admin-teams-table__numbers-cell">
+                {% set nums = (nbt.get(t.id) if nbt is mapping else None) or [] %}
+                <div class="group-accounts">
+                  <div class="group-accounts__title">
+                    Номера команды
+                    <span class="group-accounts__count">({{ nums | length }})</span>
+                  </div>
+                  {% if nums %}
+                    <ul class="group-accounts__list">
+                      {% for n in nums %}
+                        <li class="group-accounts__item {% if not n.is_active %}group-accounts__item--disabled{% endif %}">
+                          <span class="group-accounts__email">
+                            {{ n.effective_label | e }}
+                            {% if n.label %}
+                              <span class="admin-users-table__muted">&lt;{{ n.phone_number | e }}&gt;</span>
+                            {% endif %}
+                          </span>
+                          {% if not n.is_active %}
+                            <span class="admin-users-table__muted">неактивен</span>
+                          {% endif %}
+                        </li>
+                      {% endfor %}
+                    </ul>
+                  {% else %}
+                    <p class="group-accounts__empty admin-users-table__muted">
+                      Номеров в команде пока нет.
+                    </p>
+                  {% endif %}
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        {% endfor %}
+      </table>
+    </div>
+  {% endif %}
 
   {# --- Диалог переназначения лидера (PATCH /api/admin/teams/{id}/leader) ---
-     new_leader_user_id обязан быть участником этой команды. #}
+     new_leader_user_id обязан быть ДОМАШНИМ участником этой команды. Кандидаты
+     подгружаются по требованию из GET /api/admin/users (docs §5, ADR-0016 §4). #}
   <dialog class="dialog" id="dialog-leader-team" data-admin-leader-dialog>
     <form method="dialog" class="dialog__form-cancel">
       <button type="submit" class="btn btn--link" aria-label="Закрыть">&times;</button>

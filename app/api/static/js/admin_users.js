@@ -106,6 +106,23 @@
 
       var payload = { username: username, team_id: teamId, display_name: displayName ? displayName : null };
 
+      // Доп. команды (multi-team, ADR-0012, docs §4): выбранные опции мультиселекта
+      // отправляем массивом extra_team_ids. Домашняя команда исключается (backend
+      // тоже дедуплит/исключает её молча); дубли убираются.
+      var extraSelect = createForm.querySelector('[data-admin-create-extra-teams]');
+      if (extraSelect) {
+        var extraIds = [];
+        for (var i = 0; i < extraSelect.options.length; i++) {
+          var opt = extraSelect.options[i];
+          if (!opt.selected) continue;
+          var v = parseInt(opt.value, 10);
+          if (Number.isFinite(v) && v > 0 && v !== teamId && extraIds.indexOf(v) === -1) {
+            extraIds.push(v);
+          }
+        }
+        if (extraIds.length) payload.extra_team_ids = extraIds;
+      }
+
       if (createSubmit) createSubmit.disabled = true;
       SMS.csrfFetch('/api/admin/users', { method: 'POST', body: payload })
         .then(function (resp) {

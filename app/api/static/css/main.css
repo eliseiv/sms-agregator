@@ -991,6 +991,166 @@ body.tg-app .footer { display: none; }
   .admin__toolbar { flex-direction: column; align-items: stretch; }
 }
 
+/* ---------- 11c. Никнеймы номеров на /messages (docs §6/§9) -------------- */
+/* Эффективный лейбл получателя в строке сообщения: если задан никнейм, рядом
+   показываем сам номер приглушённо (по образцу mail-agregator `name <email>`). */
+.message-card__to-raw {
+  font-family: var(--font-family-mono);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+/* Раскрывающийся блок редактирования никнеймов (нативный <details>, no-JS). */
+.numbers-nick {
+  margin-top: var(--space-6);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-4);
+}
+.numbers-nick__summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: var(--font-size-md);
+  margin-bottom: var(--space-2);
+}
+.numbers-nick__list {
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.numbers-nick__item {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg);
+}
+.numbers-nick__form {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.numbers-nick__phone {
+  font-family: var(--font-family-mono);
+  font-weight: 600;
+  color: var(--color-text);
+}
+.numbers-nick__team { white-space: nowrap; }
+
+@media (max-width: 640px) {
+  .numbers-nick__form { align-items: stretch; }
+  .numbers-nick__form .field__input--compact { width: 100%; }
+}
+
+/* ---------- 8b. /admin/teams SSR-паритет (ADR-0016) ---------------------- */
+/* Единая таблица `admin-teams-table`, <tbody> на команду (мета-строка +
+   строка-номеров на colspan). Порт mail-agregator admin-groups-table +
+   group-accounts; аддитивно, `admin-groups-table` (client-render) не трогаем. */
+.admin-teams-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.admin-teams-table th, .admin-teams-table td {
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: top;
+  font-size: var(--font-size-sm);
+}
+.admin-teams-table thead th {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: var(--font-size-xs);
+}
+.admin-teams-table tbody tr:last-child td { border-bottom: none; }
+.admin-teams-table tbody tr:hover { background: var(--color-bg-subtle); }
+.admin-teams-table__name strong { font-weight: 600; }
+.admin-teams-table__members,
+.admin-teams-table__numbers { font-variant-numeric: tabular-nums; }
+.admin-teams-table__date { color: var(--color-text-muted); font-variant-numeric: tabular-nums; }
+.admin-teams-table__actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+/* Мягкий разделитель между командами (как в референсе групп). */
+.admin-teams-table tbody.admin-teams-table__group + tbody.admin-teams-table__group tr:first-child td {
+  border-top: 2px solid var(--color-border-strong);
+}
+/* Строка-номеров разворачивается на всю ширину; приглушённый фон. */
+.admin-teams-table__numbers-row td {
+  background: var(--color-bg-subtle);
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  border-top: 1px dashed var(--color-border);
+}
+
+/* Список номеров/ресурсов под командой (порт group-accounts из mail-agregator). */
+.group-accounts__title {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-2);
+}
+.group-accounts__count { font-weight: 400; }
+.group-accounts__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.group-accounts__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+  font-size: var(--font-size-sm);
+}
+.group-accounts__item--disabled .group-accounts__email {
+  text-decoration: line-through;
+  color: var(--color-text-muted);
+}
+.group-accounts__email { font-weight: 500; }
+.group-accounts__empty { margin: 0; font-style: italic; }
+
+/* Инлайн-раскрывашка действий (создать/переименовать): <summary> как кнопка,
+   форма под ней. CSP-safe (нативный <details>, без JS). */
+.inline-disclosure { position: relative; }
+.inline-disclosure > summary {
+  list-style: none;
+  display: inline-flex;
+}
+.inline-disclosure > summary::-webkit-details-marker { display: none; }
+.inline-disclosure > summary::marker { content: ''; }
+.inline-disclosure > .inline-form {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-top: var(--space-2);
+}
+.admin-teams__create { margin-left: var(--space-2); }
+.admin-teams-table__rename-form { align-items: center; }
+
+@media (max-width: 640px) {
+  .inline-disclosure > .inline-form { width: 100%; }
+  .inline-disclosure > .inline-form .field__input--compact { width: 100%; }
+}
+
 /* ---------- 13. Reduced motion ------------------------------------------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

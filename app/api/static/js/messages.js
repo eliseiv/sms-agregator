@@ -34,6 +34,7 @@
 
   var config = parseConfig(document.querySelector('[data-messages-config]'));
   var teamNames = buildTeamNames(config.teamNames);
+  var labelByNumber = buildLabelMap(config.numberLabels);
   var nextCursor = config.nextCursor || null;
   var busy = false;
 
@@ -52,7 +53,7 @@
   /* ---- парсинг конфигурации ---------------------------------------------- */
 
   function parseConfig(node) {
-    var fallback = { nextCursor: null, toNumber: '', teamId: null, isSuperAdmin: false, limit: 50, teamNames: [] };
+    var fallback = { nextCursor: null, toNumber: '', teamId: null, isSuperAdmin: false, limit: 50, teamNames: [], numberLabels: [] };
     if (!node) return fallback;
     try {
       var data = JSON.parse(node.textContent || '{}');
@@ -62,7 +63,8 @@
         teamId: (data.teamId === 0 || data.teamId) ? data.teamId : null,
         isSuperAdmin: !!data.isSuperAdmin,
         limit: (typeof data.limit === 'number' && data.limit > 0) ? data.limit : 50,
-        teamNames: Array.isArray(data.teamNames) ? data.teamNames : []
+        teamNames: Array.isArray(data.teamNames) ? data.teamNames : [],
+        numberLabels: Array.isArray(data.numberLabels) ? data.numberLabels : []
       };
     } catch (_e) {
       return fallback;
@@ -73,6 +75,16 @@
     var map = {};
     (pairs || []).forEach(function (p) {
       if (p && p.id != null && p.name != null) map[String(p.id)] = p.name;
+    });
+    return map;
+  }
+
+  // Карта phone_number → label (эффективный лейбл = label or phone). null-label
+  // означает «никнейма нет» (показываем сам номер).
+  function buildLabelMap(pairs) {
+    var map = {};
+    (pairs || []).forEach(function (p) {
+      if (p && p.num != null) map[String(p.num)] = (p.label != null && p.label !== '') ? p.label : null;
     });
     return map;
   }
@@ -132,7 +144,13 @@
     var head = el('div', { className: 'message-card__head' });
     head.appendChild(el('span', { className: 'message-card__from', text: msg.from_number || '' }));
     head.appendChild(el('span', { className: 'message-card__arrow', text: '→', attrs: { 'aria-hidden': 'true' } }));
-    head.appendChild(el('span', { className: 'message-card__to', text: msg.to_number || '' }));
+    // Эффективный лейбл получателя: label or to_number (§6/§9).
+    var toNum = msg.to_number || '';
+    var lbl = labelByNumber[toNum];
+    head.appendChild(el('span', { className: 'message-card__to', text: lbl ? lbl : toNum, attrs: { 'data-message-to': toNum } }));
+    if (lbl) {
+      head.appendChild(el('span', { className: 'message-card__to-raw', text: toNum, attrs: { 'data-message-to-raw': '' } }));
+    }
 
     if (msg.team_id != null) {
       var name = teamNames[String(msg.team_id)] || ('Команда #' + msg.team_id);
@@ -260,4 +278,77 @@
         SMS.flash(e && e.message ? e.message : 'Не удалось загрузить ещё сообщения.', 'error');
       });
   }
+
+  /* ---- редактирование никнейма номера (docs/05 §6/§9) -------------------- */
+
+  // Обновить эффективный лейбл получателя во всех отрендеренных карточках для
+  // данного номера (без перезагрузки).
+  function applyLabelToCards(num, label) {
+    if (!num) return;
+    var spans = root.querySelectorAll('[data-message-to]');
+    for (var i = 0; i < spans.length; i++) {
+      var span = spans[i];
+      if (span.getAttribute('data-message-to') !== num) continue;
+      var raw = span.nextElementSibling;
+      var hasRaw = !!(raw && raw.getAttribute && raw.getAttribute('data-message-to-raw') != null
+        && raw.classList && raw.classList.contains('message-card__to-raw'));
+      if (label) {
+        span.textContent = label;
+        if (hasRaw) {
+          raw.textContent = num;
+        } else {
+          var r = el('span', { className: 'message-card__to-raw', text: num, attrs: { 'data-message-to-raw': '' } });
+          span.parentNode.insertBefore(r, span.nextSibling);
+        }
+      } else {
+        span.textContent = num;
+        if (hasRaw && raw.parentNode) raw.parentNode.removeChild(raw);
+      }
+    }
+  }
+
+  // Обновить подпись опции в фильтре номера (phone — label).
+  function updateFilterOption(num, label) {
+    var sel = document.getElementById('filter-number');
+    if (!sel || !num) return;
+    for (var i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value !== num) continue;
+      sel.options[i].textContent = label ? (num + ' — ' + label) : num;
+    }
+  }
+
+  document.addEventListener('submit', function (event) {
+    var form = event.target.closest && event.target.closest('[data-number-nick-form]');
+    if (!form) return;
+    event.preventDefault();
+    var id = form.getAttribute('data-number-id');
+    var input = form.querySelector('[data-number-nick-input]');
+    var save = form.querySelector('[data-number-nick-save]');
+    if (!id || !input) return;
+
+    var value = (input.value != null) ? input.value : '';
+    if (save) save.disabled = true;
+
+    SMS.csrfFetch('/api/numbers/' + encodeURIComponent(id), { method: 'PATCH', body: { label: value } })
+      .then(function (resp) {
+        if (!resp.ok) return SMS.readJsonError(resp).then(function (e) { throw new Error(e.message); });
+        return resp.json();
+      })
+      .then(function (data) {
+        var newLabel = (data && data.label) ? data.label : '';
+        var phone = (data && data.phone_number) ? data.phone_number : (form.getAttribute('data-phone') || '');
+        input.value = newLabel;
+        if (phone) {
+          labelByNumber[phone] = newLabel || null;
+          applyLabelToCards(phone, newLabel);
+          updateFilterOption(phone, newLabel);
+        }
+        SMS.flash(newLabel ? 'Никнейм сохранён.' : 'Никнейм удалён.', 'success');
+        if (save) save.disabled = false;
+      })
+      .catch(function (e) {
+        if (save) save.disabled = false;
+        SMS.flash(e && e.message ? e.message : 'Не удалось сохранить никнейм.', 'error');
+      });
+  });
 })();

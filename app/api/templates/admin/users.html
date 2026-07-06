@@ -348,6 +348,31 @@
         {% endif %}
       </div>
 
+      {# Доп. команды (multi-team, ADR-0012, docs §4 «extra_team_ids»). Опционально:
+         пользователь добавляется в эти команды сразу при создании, помимо домашней.
+         admin_users.js читает выбранные опции и шлёт их массивом extra_team_ids. #}
+      <div class="field">
+        <label class="field__label" for="new-user-extra-teams">
+          Дополнительные команды <span class="field__optional">(необязательно)</span>
+        </label>
+        <select
+          class="field__input"
+          id="new-user-extra-teams"
+          name="extra_team_ids"
+          multiple
+          size="4"
+          data-admin-create-extra-teams>
+          {% for t in teams | default([]) %}
+          <option value="{{ t.id }}">{{ t.name | e }}</option>
+          {% endfor %}
+        </select>
+        <p class="field__hint">
+          Удерживайте Ctrl (⌘ на Mac), чтобы выбрать несколько. Пользователь получит
+          доступ к номерам и SMS этих команд помимо домашней. Домашняя команда
+          учитывается автоматически — повторно её выбирать не нужно.
+        </p>
+      </div>
+
       <div class="form-actions">
         <button type="submit" class="btn btn--primary" data-admin-create-submit {% if not teams %}disabled{% endif %}>Создать</button>
       </div>

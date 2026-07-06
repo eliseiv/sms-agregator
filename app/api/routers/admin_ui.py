@@ -38,5 +38,13 @@ async def admin_users_page(
 
 
 @router.get("/admin/teams", response_class=HTMLResponse)
-async def admin_teams_page(request: Request, sess: CurrentSession) -> Response:
-    return await render(request, "admin/teams.html", {"csrf_token": sess.csrf_token})
+async def admin_teams_page(
+    request: Request, db: DbSession, sess: CurrentSession
+) -> Response:
+    dashboard = await AdminService(db).teams_page()
+    context: dict[str, Any] = {
+        **dashboard,
+        "csrf_token": sess.csrf_token,
+        "is_super_admin": True,
+    }
+    return await render(request, "admin/teams.html", context)

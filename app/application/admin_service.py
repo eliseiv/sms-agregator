@@ -257,6 +257,76 @@ class AdminService:
             "unassigned_numbers": unassigned_numbers,
         }
 
+    # --- SSR /admin/teams page context (§7, ADR-0016) ----------------------
+
+    async def teams_page(self) -> dict[str, Any]:
+        """SSR-контекст ``/admin/teams`` — паритет с mail-agregator (docs/05 §7,
+        ADR-0016). Read-only.
+
+        Возвращает ``teams`` (id, name, leader-бриф, ``members_count`` по
+        ``user_teams``, ``numbers_count``, is_active, created_at) и
+        ``numbers_by_team`` — группировку **назначенных** номеров по ТЕКУЩЕЙ
+        принадлежности (``phone_numbers.team_id``); для каждого — эффективный
+        лейбл ``label or phone_number``. Команды без номеров → пустой список;
+        порядок внутри команды — ``created_at DESC`` (``list_filtered`` уже
+        сортирует так глобально, группировка сохраняет порядок). Unassigned-номера
+        (``team_id IS NULL``) НЕ включаются (вне scope teams-страницы, ADR-0016 §3).
+        """
+        teams_list = await self._teams.list_all()  # отсортированы по name
+        team_ids = [t.id for t in teams_list]
+        member_counts = await self._teams.member_counts(team_ids)
+        numbers_counts = await self._teams.numbers_counts(team_ids)
+
+        leader_ids = {
+            t.leader_user_id for t in teams_list if t.leader_user_id is not None
+        }
+        leaders = {u.id: u for u in await self._users.list_all() if u.id in leader_ids}
+
+        numbers_repo = PhoneNumberRepository(self._db)
+        assigned = await numbers_repo.list_filtered(assignment="assigned", team_id=None)
+        numbers_by_team: dict[int, list[dict[str, Any]]] = {
+            t.id: [] for t in teams_list
+        }
+        for n in assigned:
+            if n.team_id is None:
+                continue
+            numbers_by_team.setdefault(n.team_id, []).append(
+                {
+                    "id": n.id,
+                    "phone_number": n.phone_number,
+                    "label": n.label,
+                    "effective_label": n.label or n.phone_number,
+                    "is_active": n.is_active,
+                }
+            )
+
+        teams_ctx: list[dict[str, Any]] = []
+        for t in teams_list:
+            leader = (
+                leaders.get(t.leader_user_id) if t.leader_user_id is not None else None
+            )
+            teams_ctx.append(
+                {
+                    "id": t.id,
+                    "name": t.name,
+                    "leader": (
+                        {
+                            "id": leader.id,
+                            "username": leader.username,
+                            "display_name": leader.display_name,
+                        }
+                        if leader is not None
+                        else None
+                    ),
+                    "members_count": member_counts.get(t.id, 0),
+                    "numbers_count": numbers_counts.get(t.id, 0),
+                    "is_active": t.is_active,
+                    "created_at": t.created_at.isoformat(),
+                }
+            )
+
+        return {"teams": teams_ctx, "numbers_by_team": numbers_by_team}
+
     # --- Create -----------------------------------------------------------
 
     async def create_user(
@@ -266,6 +336,7 @@ class AdminService:
         username: str,
         display_name: str | None,
         team_id: int | None,
+        extra_team_ids: list[int] | None = None,
         ip: str,
         user_agent: str | None,
     ) -> User:
@@ -280,6 +351,14 @@ class AdminService:
         team = await self._teams.get(team_id)
         if team is None:
             raise NotFoundError("team_not_found", "Команда не найдена")
+
+        # ADR-0012: доп. команды создаются в ЭТОЙ же транзакции. Нормализация
+        # (дедуп, исключение домашней, положительные) — на уровне схемы; здесь
+        # проверяем существование каждой (несуществующая → 404, откат всего).
+        extras = extra_team_ids or []
+        for extra_id in extras:
+            if await self._teams.get(extra_id) is None:
+                raise NotFoundError("team_not_found", "Команда не найдена")
 
         if await self._users.get_by_username(clean_username) is not None:
             raise ConflictError("username_taken", "Логин уже занят")
@@ -301,13 +380,17 @@ class AdminService:
             action="create_user",
             target_user_id=user.id,
             target_username=user.username,
-            details={"team_id": team_id},
+            details={"team_id": team_id, "extra_team_ids": extras},
             ip=ip,
             user_agent=user_agent,
         )
 
         # ADR-0012: зеркалим домашнее членство в user_teams (та же транзакция).
         await self._memberships.add(user_id=user.id, team_id=team_id)
+
+        # ADR-0012: доп. членства (роль/лидерство доп. команд НЕ меняют).
+        for extra_id in extras:
+            await self._memberships.add(user_id=user.id, team_id=extra_id)
 
         # Правило «первый=лидер».
         role = await TeamsService(self._db).set_leader_if_absent(

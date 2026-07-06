@@ -151,6 +151,14 @@ class PhoneNumberRepository:
             .values(team_id=team_id, updated_at=datetime.now(UTC))
         )
 
+    async def set_label(self, *, number_id: int, label: str | None) -> None:
+        """Задать/затереть никнейм номера (docs/05 §6). ``label=None`` — убрать."""
+        await self._s.execute(
+            update(PhoneNumber)
+            .where(PhoneNumber.id == number_id)
+            .values(label=label, updated_at=datetime.now(UTC))
+        )
+
     async def find_by_phone(self, phone_number: str) -> PhoneNumber | None:
         stmt = select(PhoneNumber).where(PhoneNumber.phone_number == phone_number)
         return (await self._s.execute(stmt)).scalar_one_or_none()

@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 
 from app.api.deps import CurrentScope, DbSession, require_authenticated
-from app.api.schemas import CreateNumberRequest
+from app.api.schemas import CreateNumberRequest, UpdateNumberRequest
 from app.api.serializers import serialize_number
 from app.application.audit import AuditWriter
 from app.domain.services import normalize_phone
@@ -134,8 +134,64 @@ async def create_number(
             "id": number.id,
             "phone_number": number.phone_number,
             "team_id": number.team_id,
+            "label": number.label,
         },
     )
+
+
+@router.patch("/{number_id}")
+async def update_number(
+    number_id: int, request: Request, db: DbSession, scope: CurrentScope
+) -> JSONResponse:
+    """Задать/изменить/затереть никнейм номера (docs/05 §6, PATCH /api/numbers/{id}).
+
+    Presence-семантика: ключ ``label`` в body отсутствует → no-op (возврат текущего
+    состояния); присутствует непустой (после strip) → set; присутствует пустой/
+    ``null`` → затирание (``label=NULL``). Guard принадлежности — по образцу
+    ``delete_number``: super_admin — любой номер (вкл. unassigned); участник —
+    только номер своей команды (``phone_numbers.team_id ∈ scope.team_ids``).
+    """
+    body = await _read_body(request)
+    payload = UpdateNumberRequest.model_validate(body)
+    set_label = "label" in body
+
+    repo = PhoneNumberRepository(db)
+    teams = TeamRepository(db)
+    number = await repo.get(number_id)
+    if number is None:
+        raise NotFoundError("number_not_found", "Номер не найден")
+    if not scope.is_super_admin and (
+        number.team_id is None or number.team_id not in scope.team_ids
+    ):
+        raise ApiError(
+            "forbidden", "Нельзя изменить номер чужой команды", status_code=403
+        )
+
+    team_name: str | None = None
+    if number.team_id is not None:
+        team = await teams.get(number.team_id)
+        team_name = team.name if team is not None else None
+
+    if set_label:
+        # Закрыть autobegun read-tx (repo.get / teams.get) перед write-транзакцией.
+        await db.commit()
+        async with db.begin():
+            await repo.set_label(number_id=number_id, label=payload.label)
+            await AuditWriter(db).log(
+                actor_user_id=scope.user_id,
+                action="number_label_set",
+                details={
+                    "number_id": number_id,
+                    "phone_number": number.phone_number,
+                    "label": payload.label,
+                },
+                ip=client_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+            )
+        # expire_on_commit=False → объект живой; отражаем новое значение локально.
+        number.label = payload.label
+
+    return JSONResponse(content=serialize_number(number, team_name))
 
 
 @router.delete("/{number_id}")

@@ -60,6 +60,27 @@
   {%- endif -%}
 {%- endmacro -%}
 
+{# Карта to_number→label из уже инжектированного контекста numbers (§6/§9).
+   serialize_message НЕ меняется — эффективный лейбл номера-получателя строится
+   здесь: label or to_number. Если номера нет в numbers (вне видимого набора /
+   отвязан) — показываем сам to_number. Пары отдаются и в JSON-остров для
+   одинакового рендера дозагруженных карточек в messages.js. #}
+{%- set _nl = namespace(pairs=[]) -%}
+{%- for n in sel_numbers -%}
+  {%- if n.phone_number -%}{%- set _nl.pairs = _nl.pairs + [{'num': n.phone_number, 'label': (n.label if n.label else none)}] -%}{%- endif -%}
+{%- endfor -%}
+
+{%- macro to_cell(num) -%}
+  {%- set ns = namespace(label=none, found=false) -%}
+  {%- for p in _nl.pairs -%}{%- if not ns.found and p.num == num -%}{%- set ns.found = true -%}{%- set ns.label = p.label -%}{%- endif -%}{%- endfor -%}
+  {%- if ns.label -%}
+    <span class="message-card__to" data-message-to="{{ num | e }}">{{ ns.label | e }}</span>
+    <span class="message-card__to-raw" data-message-to-raw>{{ num | e }}</span>
+  {%- else -%}
+    <span class="message-card__to" data-message-to="{{ num | e }}">{{ num | e }}</span>
+  {%- endif -%}
+{%- endmacro -%}
+
 {% block title %}Сообщения &middot; SMS Агрегатор{% endblock %}
 {% block body_class %}messages{% endblock %}
 
@@ -121,7 +142,7 @@
             <div class="message-card__head">
               <span class="message-card__from">{{ msg.from_number | e }}</span>
               <span class="message-card__arrow" aria-hidden="true">→</span>
-              <span class="message-card__to">{{ msg.to_number | e }}</span>
+              {{ to_cell(msg.to_number) }}
               {{ team_badge(msg.team_id) }}
               <time class="message-card__time" datetime="{{ msg.received_at | e }}" data-message-time>{{ msg.received_at | e }}</time>
             </div>
@@ -153,6 +174,59 @@
     </div>
   {% endif %}
 
+  {# --- Никнеймы номеров (docs/05 §6/§9; прямое требование заказчика) -------
+     Контрол «задать/изменить никнейм» на /messages для ВСЕХ ролей. Источник
+     списка — уже инжектированный ролевой набор numbers (super_admin — все;
+     участник — номера своих команд). Мутация — PATCH /api/numbers/{id} {label};
+     пустое поле → затирание (label=NULL, §6). no-JS fallback: POST на тот же
+     путь ресурса + _method=PATCH + label + csrf_token (MethodOverride whitelist
+     ^/api/numbers/\d+$). messages.js перехватывает submit и сохраняет без
+     перезагрузки, обновляя эффективный лейбл в строках сообщений и в фильтре. #}
+  <details class="numbers-nick" data-numbers-nick>
+    <summary class="numbers-nick__summary">Никнеймы номеров</summary>
+    <p class="field__hint">
+      Задайте номеру никнейм — он покажется рядом с номером в списке сообщений и в
+      фильтре. Оставьте поле пустым и сохраните, чтобы убрать никнейм.
+    </p>
+    {% if sel_numbers %}
+      <ul class="numbers-nick__list">
+        {% for n in sel_numbers %}
+          <li class="numbers-nick__item">
+            <form class="inline-form numbers-nick__form"
+                  method="POST"
+                  action="/api/numbers/{{ n.id }}"
+                  data-number-nick-form
+                  data-number-id="{{ n.id }}"
+                  data-phone="{{ n.phone_number | e }}">
+              {{ m.csrf_input() }}
+              <input type="hidden" name="_method" value="PATCH">
+              <span class="numbers-nick__phone">{{ n.phone_number | e }}</span>
+              {% if is_admin and n.team_name %}
+                <span class="numbers-nick__team admin-users-table__muted">{{ n.team_name | e }}</span>
+              {% endif %}
+              <label class="visually-hidden" for="nick-{{ n.id }}">Никнейм номера {{ n.phone_number | e }}</label>
+              <input class="field__input field__input--compact"
+                     id="nick-{{ n.id }}"
+                     name="label"
+                     type="text"
+                     maxlength="100"
+                     value="{{ n.label | default('') | e }}"
+                     placeholder="Никнейм"
+                     autocomplete="off"
+                     data-number-nick-input>
+              <button type="submit" class="btn btn--secondary btn--small" data-number-nick-save>Сохранить</button>
+            </form>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="admin__empty admin__empty--inline" role="status">
+        <p>Доступных номеров нет.</p>
+        <p class="field__hint">Никнеймы можно задавать номерам ваших команд.</p>
+      </div>
+    {% endif %}
+  </details>
+
   {# --- Данные для JS (CSP-safe: JSON-остров, без inline-обработчиков) --- #}
   <script type="application/json" data-messages-config>
     {{ {
@@ -161,7 +235,8 @@
       'teamId': (cur_team if cur_team != '' else none),
       'isSuperAdmin': is_admin,
       'limit': page_limit,
-      'teamNames': _tn.pairs
+      'teamNames': _tn.pairs,
+      'numberLabels': _nl.pairs
     } | tojson }}
   </script>
 </section>

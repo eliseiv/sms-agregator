@@ -247,6 +247,10 @@ flowchart TD
 
 Контракт SSR-контекста `/admin` (набор `user_groups`, из которого строится banding) + полный приёмочный чек-лист паритета — [05-api-contracts.md](./05-api-contracts.md) §7; решение о паритете — [ADR-0015](./adr/ADR-0015-admin-users-visual-parity-with-mail-agregator.md).
 
+## SSR-страница команд `/admin/teams` (ADR-0016)
+
+`GET /admin/teams` — **server-rendered** (ранее — пустая оболочка + client-side fetch), порт `mail-agregator/.../admin/groups/list.html`. Модель: **единая таблица** `admin-teams-table`, где **каждая команда — отдельный `<tbody>`** из мета-строки (название/лидер/участников/номеров/дата/действия) + строки-списка её номеров (`<td colspan="6">`), [ADR-0016](./adr/ADR-0016-admin-teams-ssr-parity-with-mail-agregator.md). Номера группируются по **текущей** принадлежности `phone_numbers.team_id` (эффективный лейбл `label or phone_number`); нераспределённые (`team_id IS NULL`) на этой странице не показываются (их место — секция номеров на `/admin`). Контролы create/rename/delete/leader сохранены (§5): create/rename/delete — с no-JS form-fallback (`_method` override), назначение лидера — JS-обогащённый диалог (кандидаты из `GET /api/admin/users`). Backend (`admin_ui.py::admin_teams_page`) инжектит `teams`/`numbers_by_team`/`csrf_token`/`is_super_admin`; `admin_teams.js` теряет ветку fetch+render списка. Контракт SSR-контекста (литеральные имена) — [05-api-contracts.md](./05-api-contracts.md) §7 (`GET /admin/teams`). Схема БД не меняется.
+
 ## On-demand sync номеров из Twilio (ADR-0013)
 
 По требованию (не по расписанию) super_admin наполняет unassigned-пул входящими номерами Twilio-аккаунта. Тот же механизм доступен как HTTP-endpoint и как CLI-скрипт (общая сервис-функция, единое поведение).

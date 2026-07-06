@@ -45,6 +45,23 @@ async def _read_body(request: Request) -> dict[str, Any]:
     return {k: v for k, v in form.items() if k not in {"csrf_token", "_method"}}
 
 
+def _form_int_list(raw: list[Any]) -> list[int]:
+    """Разобрать multi-value поле в список int (нецелые/пустые отбрасываются).
+
+    Аналог ``mail-agregator _form_int_list`` для no-JS multi-select
+    (``extra_team_ids[]`` / повторяющееся ``extra_team_ids``)."""
+    out: list[int] = []
+    for value in raw:
+        text = str(value).strip()
+        if not text:
+            continue
+        try:
+            out.append(int(text))
+        except ValueError:
+            continue
+    return out
+
+
 def _actor_id(request: Request) -> int:
     return int(request.state.session.user_id)
 
@@ -64,6 +81,14 @@ async def list_users(db: DbSession) -> JSONResponse:
 @router.post("/users")
 async def create_user(request: Request, db: DbSession) -> JSONResponse:
     body = await _read_body(request)
+    # no-JS форма (ADR-0012, docs/05 §4): доп. команды — multi-value поле
+    # extra_team_ids[] / повторяющееся extra_team_ids (form.items() схлопывает
+    # повторы → читаем getlist). JSON-путь принимает массив extra_team_ids как есть.
+    ct = request.headers.get("content-type", "")
+    if not ct.startswith("application/json"):
+        form = await request.form()
+        raw = [*form.getlist("extra_team_ids[]"), *form.getlist("extra_team_ids")]
+        body["extra_team_ids"] = _form_int_list(raw)
     payload = CreateUserRequest.model_validate(body)
     ip, ua = _client(request)
     async with db.begin():
@@ -72,6 +97,7 @@ async def create_user(request: Request, db: DbSession) -> JSONResponse:
             username=payload.username,
             display_name=payload.display_name,
             team_id=payload.team_id,
+            extra_team_ids=payload.extra_team_ids,
             ip=ip,
             user_agent=ua,
         )
