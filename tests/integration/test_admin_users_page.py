@@ -428,7 +428,9 @@ async def test_admin_render_team_chips_home_and_extra(client):
     assert f'action="/api/admin/users/{mem.id}/teams/{home}"' not in body
 
 
-async def test_admin_render_unassigned_numbers_section(client):
+async def test_admin_no_unassigned_numbers_section(client):
+    """Секция «Нераспределённые номера» убрана с /admin — управление всеми
+    номерами перенесено на страницу /numbers."""
     admin = await _super_admin("ap-num")
     async with make_session() as s:
         async with s.begin():
@@ -441,8 +443,23 @@ async def test_admin_render_unassigned_numbers_section(client):
             )
     cookies, _ = await make_auth(admin, "super_admin", None)
     body = (await client.get("/admin", cookies=cookies)).text
-    assert "Нераспределённые номера" in body
-    assert "+441260000099" in body
+    assert "Нераспределённые номера" not in body
+    assert "+441260000099" not in body
+    assert "data-numbers-section" not in body
+
+
+async def test_admin_render_rename_control(client):
+    """Меню «+» содержит пункт «Сменить имя» и диалог переименования (для не-super)."""
+    admin = await _super_admin("ap-rename")
+    async with make_session() as s:
+        async with s.begin():
+            t = await seed_team(s, "ap-rename-team")
+            await seed_user(s, username="ap-rename-m", role="group_member", team_id=t)
+    cookies, _ = await make_auth(admin, "super_admin", None)
+    body = (await client.get("/admin", cookies=cookies)).text
+    assert "data-admin-actions-rename" in body  # пункт меню «Сменить имя»
+    assert "data-admin-rename-dialog" in body  # диалог переименования
+    assert "data-display-name=" in body  # префилл текущего имени на кнопке «+»
 
 
 async def test_admin_render_tbody_banding_and_spacer(client):

@@ -78,6 +78,7 @@
   var menuCurrentGid = 0;   // домашняя команда пользователя
   var menuMemberGids = [];  // все команды пользователя
   var menuIsLeader = false;
+  var menuDisplayName = '';  // текущее отображаемое имя (для префилла)
 
   /* ---- меню-диалог действий --------------------------------------------- */
 
@@ -86,6 +87,7 @@
   var actionsMoveBtn = document.querySelector('[data-admin-actions-move]');
   var actionsMoveDisabled = document.querySelector('[data-admin-actions-move-disabled]');
   var actionsAddBtn = document.querySelector('[data-admin-actions-add]');
+  var actionsRenameBtn = document.querySelector('[data-admin-actions-rename]');
 
   document.addEventListener('click', function (event) {
     var trigger = event.target.closest && event.target.closest('[data-admin-menu-trigger]');
@@ -95,6 +97,7 @@
     menuCurrentGid = parseInt(trigger.getAttribute('data-current-gid') || '0', 10);
     menuMemberGids = parseGidList(trigger.getAttribute('data-member-gids'));
     menuIsLeader = trigger.getAttribute('data-is-leader') === '1';
+    menuDisplayName = trigger.getAttribute('data-display-name') || '';
     if (!menuUserId) return;
 
     if (actionsUsername) actionsUsername.textContent = menuUsername;
@@ -121,6 +124,12 @@
     actionsAddBtn.addEventListener('click', function () {
       closeDialog(actionsDialog);
       openAddDialog();
+    });
+  }
+  if (actionsRenameBtn) {
+    actionsRenameBtn.addEventListener('click', function () {
+      closeDialog(actionsDialog);
+      openRenameDialog();
     });
   }
 
@@ -250,6 +259,56 @@
         .catch(function () {
           showError(addError, 'Сетевая ошибка. Попробуйте ещё раз.');
           if (addGo) addGo.disabled = false;
+        });
+    });
+  }
+
+  /* ---- смена отображаемого имени (PATCH /api/admin/users/{id}) ---------- */
+
+  var renameDialog = document.querySelector('[data-admin-rename-dialog]');
+  var renameForm = document.querySelector('[data-admin-rename-form]');
+  var renameInput = document.querySelector('[data-admin-rename-input]');
+  var renameUsername = document.querySelector('[data-admin-rename-username]');
+  var renameError = document.querySelector('[data-admin-rename-error]');
+  var renameCancel = document.querySelector('[data-admin-rename-cancel]');
+  var renameGo = document.querySelector('[data-admin-rename-go]');
+
+  function openRenameDialog() {
+    if (!renameDialog || !renameInput || !menuUserId) return;
+    if (renameUsername) renameUsername.textContent = menuUsername;
+    showError(renameError, '');
+    renameInput.value = menuDisplayName;
+    openDialog(renameDialog);
+    try { renameInput.focus(); } catch (_e) { /* игнор */ }
+  }
+
+  if (renameCancel) {
+    renameCancel.addEventListener('click', function () { closeDialog(renameDialog); });
+  }
+
+  if (renameForm) {
+    renameForm.addEventListener('submit', function (event) {
+      event.preventDefault();
+      if (!menuUserId || !renameInput) return;
+      showError(renameError, '');
+      var value = (renameInput.value != null ? renameInput.value : '').trim();
+      // Пустое имя → null (показывать логин); иначе — новое отображаемое имя.
+      var payload = { display_name: value === '' ? null : value };
+      if (renameGo) renameGo.disabled = true;
+      SMS.csrfFetch('/api/admin/users/' + encodeURIComponent(menuUserId), { method: 'PATCH', body: payload })
+        .then(function (resp) {
+          if (resp.ok) {
+            reloadWithFlash('Имя пользователя изменено.', 'success');
+            return null;
+          }
+          return SMS.readJsonError(resp).then(function (e) {
+            showError(renameError, e.message);
+            if (renameGo) renameGo.disabled = false;
+          });
+        })
+        .catch(function () {
+          showError(renameError, 'Сетевая ошибка. Попробуйте ещё раз.');
+          if (renameGo) renameGo.disabled = false;
         });
     });
   }

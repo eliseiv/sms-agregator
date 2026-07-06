@@ -126,7 +126,8 @@
                         data-username="{{ u.username | e }}"
                         data-current-gid="{{ _home_tid }}"
                         data-is-leader="{{ '1' if u.role == 'group_leader' else '0' }}"
-                        data-member-gids="{{ (u.memberships | default([]) | map(attribute='id') | list) | tojson | e }}">+</button>
+                        data-member-gids="{{ (u.memberships | default([]) | map(attribute='id') | list) | tojson | e }}"
+                        data-display-name="{{ u.display_name | default('') | e }}">+</button>
                     {% endif %}
                   </div>
                 </td>
@@ -214,84 +215,8 @@
     {{ m.page_pagination(page | default(1), total | default(0), limit | default(50), '/admin?' + ('q=' + (q | urlencode) + '&' if q else '')) }}
   {% endif %}
 
-  {# --- Секция «Нераспределённые номера» (docs §4a, §7; ADR-0009/0013) ---- #}
-  {# Легитимное sms-дополнение, сохраняется как есть (ADR-0015): sync из Twilio
-     + назначение команды номерам. #}
-  <section class="admin__group admin-numbers"
-           aria-labelledby="grp-numbers-title"
-           data-numbers-section
-           data-teams='{{ teams | default([]) | tojson }}'>
-    <div class="admin__group-head">
-      <h2 id="grp-numbers-title" class="admin__group-title">Нераспределённые номера</h2>
-      <div class="admin-numbers__controls">
-        <button type="button"
-                class="btn btn--secondary btn--small"
-                data-numbers-sync>Синхронизировать из Twilio</button>
-        <div class="admin-numbers__filter">
-          <label class="admin-numbers__filter-label" for="numbers-filter">Показать</label>
-          <select class="field__input field__input--compact" id="numbers-filter" data-numbers-filter>
-            <option value="unassigned" selected>Нераспределённые</option>
-            <option value="assigned">Распределённые</option>
-            <option value="all">Все</option>
-          </select>
-        </div>
-      </div>
-    </div>
-    <p class="admin__hint">
-      Назначьте номеру команду — входящие SMS с него начнут доставляться её участникам.
-    </p>
-    {# Статус синхронизации: обновляется admin_numbers.js, озвучивается скринридером. #}
-    <p class="admin-numbers__sync-status" data-numbers-sync-status role="status" aria-live="polite" hidden></p>
-
-    {# Корневой контейнер: первичный рендер — SSR (unassigned_numbers).
-       admin_numbers.js перерисовывает его при смене фильтра / после назначения
-       (loading / error / empty / success). #}
-    <div data-numbers-root aria-live="polite">
-      {% if unassigned_numbers %}
-        <ul class="numbers-list">
-          {% for n in unassigned_numbers %}
-          <li class="number-card" data-number-id="{{ n.id }}">
-            <div class="number-card__main">
-              <span class="number-card__phone">{{ n.phone_number | e }}</span>
-              {% if n.label %}<span class="number-card__label">{{ n.label | e }}</span>{% endif %}
-              {% if n.is_active is defined and not n.is_active %}
-                <span class="admin-user__badge admin-user__badge--group_member">неактивен</span>
-              {% endif %}
-            </div>
-            {# no-JS fallback: POST + _method=PATCH (docs §7). JS перехватывает. #}
-            <form class="inline-form number-card__assign"
-                  method="POST"
-                  action="/api/admin/numbers/{{ n.id }}"
-                  data-number-assign-form
-                  data-number-id="{{ n.id }}">
-              {{ m.csrf_input() }}
-              <input type="hidden" name="_method" value="PATCH">
-              <label class="visually-hidden" for="assign-team-{{ n.id }}">
-                Команда для номера {{ n.phone_number | e }}
-              </label>
-              <select class="field__input field__input--compact"
-                      id="assign-team-{{ n.id }}"
-                      name="team_id"
-                      required
-                      data-number-team-select>
-                <option value="">— выберите команду —</option>
-                {% for t in teams | default([]) %}
-                <option value="{{ t.id }}">{{ t.name | e }}</option>
-                {% endfor %}
-              </select>
-              <button type="submit" class="btn btn--primary btn--small" data-number-assign-go>Назначить</button>
-            </form>
-          </li>
-          {% endfor %}
-        </ul>
-      {% else %}
-        <div class="admin__empty admin__empty--inline" role="status">
-          <p>Нераспределённых номеров нет.</p>
-          <p class="field__hint">Все номера привязаны к командам. Переключите фильтр, чтобы увидеть распределённые.</p>
-        </div>
-      {% endif %}
-    </div>
-  </section>
+  {# Секция «Нераспределённые номера» убрана — управление всеми номерами
+     (назначение команды, никнейм, удаление) перенесено на страницу /numbers. #}
 
   {# --- Диалог создания пользователя (POST /api/admin/users, docs §4) ----- #}
   {# sms-семантика: team_id обязателен; radio-выбора роли НЕТ (роль выводится
@@ -427,6 +352,9 @@
       <button type="button" class="dialog__menu-item" data-admin-actions-add>
         Добавить в другую команду
       </button>
+      <button type="button" class="dialog__menu-item" data-admin-actions-rename>
+        Сменить имя
+      </button>
     </div>
   </dialog>
 
@@ -482,6 +410,29 @@
     </form>
   </dialog>
 
+  {# --- Диалог смены отображаемого имени (PATCH /api/admin/users/{id}) ----- #}
+  <dialog class="dialog" id="dialog-rename-user" data-admin-rename-dialog>
+    <form method="dialog" class="dialog__form-cancel">
+      <button type="submit" class="btn btn--link" aria-label="Закрыть">&times;</button>
+    </form>
+    <h2 class="dialog__title">Сменить имя</h2>
+    <p>Пользователь <strong data-admin-rename-username></strong></p>
+    <p class="form-error" role="alert" data-admin-rename-error hidden></p>
+    <form class="form" data-admin-rename-form>
+      <div class="field">
+        <label class="field__label" for="rename-user-display">Отображаемое имя</label>
+        <input class="field__input" type="text" id="rename-user-display"
+               name="display_name" maxlength="128" autocomplete="off"
+               data-admin-rename-input>
+        <p class="field__hint">Оставьте поле пустым, чтобы показывать логин.</p>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn--secondary" data-admin-rename-cancel>Отмена</button>
+        <button type="submit" class="btn btn--primary" data-admin-rename-go>Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
   {# --- Диалог удаления (подтверждение вводом логина, DELETE .../users/{id}) - #}
   <dialog class="dialog" id="dialog-delete-user" data-admin-delete-dialog>
     <form method="dialog" class="dialog__form-cancel">
@@ -508,5 +459,4 @@
 {% block extra_js %}
 <script src="/static/js/admin_users.js?v={{ static_v }}"></script>
 <script src="/static/js/admin_memberships.js?v={{ static_v }}"></script>
-<script src="/static/js/admin_numbers.js?v={{ static_v }}"></script>
 {% endblock %}
